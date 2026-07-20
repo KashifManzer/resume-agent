@@ -7,6 +7,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pymupdf>=1.24",
+    "ollama>=0.5",
 ]
 
 [dependency-groups]

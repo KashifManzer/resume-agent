@@ -39,7 +39,7 @@ Evidence of the split (code + result):
 
 ## 4. External deps
 - **GitHub API**: unauthenticated **60 req/hr**. This one candidate used **11** (9 repos). ≈5 candidates/hr before the code *sleeps* to wait out the reset. Set `GITHUB_TOKEN` → 5000/hr. Required at any real volume.
-- **Ollama Cloud**: works via `Client(host="https://ollama.com", headers={"Authorization": "Bearer <key>"})`. `gemma4:31b-cloud` valid; handles structured/JSON output.
+- **Ollama Cloud**: works via `Client(host="https://ollama.com", headers={"Authorization": "Bearer <key>"})`. `gemma4:31b-cloud` valid. ⚠️ **Correction (T3):** it does **not** honor Ollama's `format` schema enforcement — it returns prose / markdown tables / ```json fences```. hiring-agent still works because `evaluator.py` coaxes JSON via prompt + `extract_json_from_response()` before `json.loads`, *not* by trusting `format`. Callers (T3 `llm.py`, T4/T5) must state the exact JSON shape in the prompt and strip fences when parsing.
 - A model name unknown to `prompt.py` maps to provider=OLLAMA and params=None — both handled fine, so `gemma4:31b-cloud` needs no code change.
 
 ## 5. Extraction reuse (for T5)
