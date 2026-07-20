@@ -44,7 +44,7 @@ User: JD + N .tex resumes
             Preserve format. No fabrication. Keep ≤1 page.
         │
         ▼
-[Guards]    compile (Tectonic) → extract text clean → ≤1 page.
+[Guards]    compile (latexmk/pdflatex) → extract text clean → ≤1 page.
             Any fail → reject edit / retry.
         │
         ▼
@@ -73,13 +73,13 @@ User: JD + N .tex resumes
 | Improver | Edit chosen `.tex` content to JD | LLM; content-only edits |
 | ATS scorer | Grounded JD-fit score + gaps | keyword coverage + independent LLM rubric |
 | Quality gate | General resume quality | hiring-agent repo, JD-blind |
-| Render/guards | `.tex`→PDF, text, page check | Tectonic + PyMuPDF/pdftotext |
+| Render/guards | `.tex`→PDF, text, page check | latexmk (pdflatex) + PyMuPDF |
 | Orchestrator | Wire the loops | caps + honest stop |
 | UI | Paste JD, upload, show results | minimal |
 
 ## 8. Automated guards (run on every produced `.tex`)
 
-1. **compile = validator** — Tectonic compiles; fail → reject/retry.
+1. **compile = validator** — `latexmk` (pdflatex) compiles; fail → reject/retry.
 2. **extraction check** — extracted text is clean (catches the LaTeX garbled-glyph ATS trap; both scorers depend on clean text).
 3. **≤1 page** — page count = 1, else reject/retry with "trim" instruction.
 
@@ -93,7 +93,7 @@ User: JD + N .tex resumes
 
 - JD-fit scorer = **grounded keyword coverage + independent LLM judge** (no third-party ATS API).
 - Resume handling = **edit user's own `.tex` in place**, preserve format, 1 page.
-- LaTeX engine = **Tectonic** (single binary, light server).
+- LaTeX engine = **TeX Live via `latexmk`** — default `pdflatex`, fall back to `lualatex`/`xelatex` for fontspec résumés. **Tectonic dropped**: its XeTeX heap-crashes (SIGABRT in `print_glyph_name`) on `fontawesome5`, a very common résumé package — see `findings/T2-renderer.md`. Local dev = TinyTeX; deploy = `texlive` image (T8).
 - Models via **Ollama Cloud** (Llama). Specific model TBD per-ticket.
 - Two independent scorers: ATS (JD-fit) + hiring-agent (quality). Both gate.
 - **hiring-agent = vendored** into `vendor/hiring-agent/` (MIT, pinned to a commit) so one clone has it and upstream changes can't break us; run as a **subprocess in its own venv**. Local patch: `OllamaProvider` cloud auth. See `vendor/hiring-agent/VENDORING.md`.
@@ -109,13 +109,13 @@ User: JD + N .tex resumes
 ## 11. Backlog (build order — de-risk first)
 
 - **T1 — Spike: hiring-agent on Ollama Cloud.** Clone repo, get `score.py resume.pdf` working against Ollama Cloud, run on a real resume, document its output format and **what actually drives the score** (GitHub vs resume text). _Highest priority — de-risks §9 quality gate._
-- **T2 — LaTeX render + guards.** `.tex` → Tectonic → PDF; extract text; enforce clean-extraction + ≤1 page.
+- **T2 — LaTeX render + guards.** `.tex` → latexmk/pdflatex → PDF; extract text; enforce clean-extraction + ≤1 page.
 - **T3 — JD parse + grounded ATS scorer.** JD → required keywords/skills; score = coverage % + independent LLM rubric → score + gap list.
 - **T4 — Selector.** JD + N resumes → closest `.tex`; "none close" fallback + warning.
 - **T5 — Improver.** Content-only `.tex` edits to close gaps; preserve format; ≤1 page; no-fabrication; change-log; compile-validate each edit.
 - **T6 — Orchestrator + loops.** Wire selector → improver ↔ ATS (cap 3) → quality gate; plateau explanation; package PDF+text+.tex+report; outer human loop (cap 5).
 - **T7 — UI.** Paste JD, upload `.tex`, show progress/scores/gaps/report, download PDF+text, feedback box.
-- **T8 — Deploy.** Live on server (Student Pack), Tectonic + Python + Ollama Cloud.
+- **T8 — Deploy.** Live on server (Student Pack), TeX Live + Python + Ollama Cloud.
 
 ## 12. Open decisions (settle inside their ticket)
 
