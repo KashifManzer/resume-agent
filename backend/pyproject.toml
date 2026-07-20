@@ -1,0 +1,12 @@
+[project]
+name = "resume-agent-backend"
+version = "0.1.0"
+description = "Resume Agent backend (FastAPI)"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+
+[tool.uv]
+package = false
