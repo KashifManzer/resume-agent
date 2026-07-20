@@ -17,3 +17,15 @@ frontend/dist/
 .DS_Store
 .idea/
 .vscode/
+
+# third-party clone (spike, not vendored)
+external/
+
+# local working tickets (for us, not shared)
+docs/tickets/
+
+# vendored hiring-agent: track the source, ignore its runtime artifacts
+vendor/hiring-agent/.venv/
+vendor/hiring-agent/cache/
+vendor/hiring-agent/resume_evaluations.csv
+vendor/hiring-agent/*.log

@@ -85,8 +85,8 @@ User: JD + N .tex resumes
 
 ## 9. Loops
 
-- **Inner (Improver ↔ ATS scorer):** max **3**. Stop early if score stops improving.
-- **Quality gate (hiring-agent):** pass ≥ 80–85; if unreachable, stop and **explain in detail** why (esp. GitHub-dominance).
+- **Inner (Improver ↔ ATS scorer):** max **3**. Stop early if the score stops improving. This is the **only** optimization loop.
+- **Quality gate (hiring-agent):** run **once**, never in a loop. It's a **gate + advice source**, not an optimization target — T1 confirmed ~90/100 of its score is GitHub/experience-driven and unreachable by résumé edits (`findings/T1-hiring-agent.md`). Clear the gate at ≥ 80–85; surface its `areas_for_improvement` in the report as the honest "why the score won't move" explanation, and fold any résumé-editable advice (e.g. add project demo URLs) into the improver's normal pass.
 - **Outer (human feedback):** max **5** rounds.
 
 ## 10. Locked decisions
@@ -96,6 +96,8 @@ User: JD + N .tex resumes
 - LaTeX engine = **Tectonic** (single binary, light server).
 - Models via **Ollama Cloud** (Llama). Specific model TBD per-ticket.
 - Two independent scorers: ATS (JD-fit) + hiring-agent (quality). Both gate.
+- **hiring-agent = vendored** into `vendor/hiring-agent/` (MIT, pinned to a commit) so one clone has it and upstream changes can't break us; run as a **subprocess in its own venv**. Local patch: `OllamaProvider` cloud auth. See `vendor/hiring-agent/VENDORING.md`.
+- **GITHUB_TOKEN** needed for hiring-agent's GitHub enrichment at volume (unauth 60/hr → 5000/hr); single dev runs work without.
 - **Tech stack (locked):**
   - Backend: **Python 3.12**, **FastAPI + uvicorn** (gunicorn workers in prod), **Pydantic v2 + pydantic-settings**, deps via **uv**. Clean layout: `routers / services / schemas / core`.
   - Long jobs: **job-based API** (POST → `job_id`, GET status / SSE). Executor **in-process now**; swap to **Celery/RQ + Redis** later without changing the API contract.
