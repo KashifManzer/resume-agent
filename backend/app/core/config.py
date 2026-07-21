@@ -14,3 +14,6 @@ ATS_COVERAGE_WEIGHT = float(os.environ.get("ATS_COVERAGE_WEIGHT", "0.6"))
 
 # Selector: best score below this (0-100) → pick closest but warn "none close".
 CLOSE_THRESHOLD = int(os.environ.get("CLOSE_THRESHOLD", "40"))
+
+# Improver: retries when an edit fails to compile / exceeds one page.
+IMPROVER_COMPILE_RETRIES = int(os.environ.get("IMPROVER_COMPILE_RETRIES", "2"))
