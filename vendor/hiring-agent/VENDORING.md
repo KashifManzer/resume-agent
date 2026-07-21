@@ -9,10 +9,13 @@ We both depend on this **and** patch it. Vendoring pins it so upstream changes c
 break us, keeps our patch with the code, and gives a single-clone setup. We re-sync
 deliberately (diff upstream against this dir), never by surprise.
 
-## Our patch
+## Our patches
 - `models.py` → `OllamaProvider.__init__`: builds an authed `ollama.Client` from
   `OLLAMA_HOST` / `OLLAMA_API_KEY` (Ollama Cloud). Falls back to the local module
   client when neither is set. Marked with a `ponytail:` comment.
+- `score.py` → `__main__`: added a `--json` flag that prints the `EvaluationData` as a
+  sentinel-wrapped block (`===EVAL_JSON=== … ===END_EVAL_JSON===`) after the normal
+  run, so `backend/app/services/hiring_agent.py` parses it instead of scraping stdout.
 
 ## Setup (isolated venv — old deps: ollama 0.5.1, pydantic 2.11.7)
 ```

@@ -365,13 +365,23 @@ def main(pdf_path):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python score.py <pdf_path>")
+    # ponytail: --json emits the EvaluationData as a sentinel-wrapped JSON block so
+    # the resume-agent backend parses it deterministically instead of scraping the
+    # pretty stdout. See ../../docs/tickets/T6-orchestrator.md.
+    want_json = "--json" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--json"]
+    if not args:
+        print("Usage: python score.py <pdf_path> [--json]")
         exit(1)
-    pdf_path = sys.argv[1]
+    pdf_path = args[0]
 
     if not os.path.exists(pdf_path):
         print(f"Error: File '{pdf_path}' does not exist.")
         exit(1)
 
-    main(pdf_path)
+    result = main(pdf_path)
+
+    if want_json:
+        print("===EVAL_JSON===")
+        print(json.dumps(result.model_dump() if result else None))
+        print("===END_EVAL_JSON===")
