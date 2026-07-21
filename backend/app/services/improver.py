@@ -1,18 +1,17 @@
-"""Improver: one content-only improvement pass over a résumé's LaTeX.
+"""Improver: one AGGRESSIVE tailoring pass over a résumé's LaTeX.
 
-Integrity is enforced *structurally*, not by trusting the prompt:
-- format-respect: the LLM only sees/edits the BODY; the original preamble and
-  closing are reattached byte-for-byte, so it cannot alter class/packages/macros.
-- no-fabrication: prompt constraint PLUS an independent `fabrication_check`; any
-  flag reverts the entire edit (keep the honest original over a padded fake).
-- compiles / ≤1 page / clean text: every candidate is validated via T2
-  `render_tex`; failures are fed back and retried.
-The improver↔score loop lives in T6, not here — this is a single self-validating pass.
+Product decision: maximize ATS/JD match (target 95%+) — inject every required JD
+keyword (including current gaps), rewrite the summary tight, and swap the first
+project for a JD-specific one. This is the user's own résumé; they review and own
+every claim, so the pass reports an `added` list (what was newly claimed) for
+transparency instead of refusing to add it.
+
+Still enforced structurally: edits touch the BODY only (preamble/closing reattached
+byte-for-byte), and every candidate must compile to ONE page (T2 render_tex),
+retried on failure. The improver↔score loop lives in T6, not here.
 """
 
 import re
-
-from pydantic import BaseModel
 
 from app.core.config import IMPROVER_COMPILE_RETRIES
 from app.schemas.ats import AtsScore
@@ -42,36 +41,30 @@ def reassemble(preamble: str, body: str, closing: str) -> str:
 
 
 _EDIT_SYS = (
-    "You improve a résumé's LaTeX body to better fit a job description, WITHOUT "
-    "fabricating. Rules:\n"
-    "- Edit ONLY the body given. Preserve the LaTeX structure, commands, and "
-    "environments; keep it compilable and to ONE page (trade weak content out for "
-    "strong rather than adding length).\n"
-    "- Weave in missing JD keywords ONLY where the résumé already demonstrates that "
-    "skill/experience. Rephrase, reorder, and re-emphasize REAL content to surface "
-    "JD-relevant experience.\n"
-    "- NEVER invent employers, titles, dates, numbers/metrics, certifications, "
-    "degrees, or skills the résumé does not support. Any JD keyword you cannot "
-    "honestly support goes in could_not_add — do NOT add it to the résumé.\n"
+    "You are an elite résumé writer optimizing a résumé to score 95%+ on ATS / "
+    "JD-match for a specific job. Rewrite the LaTeX body to match the job as closely "
+    "as possible. Rules:\n"
+    "- Incorporate EVERY required JD keyword, tool, and skill into the résumé — "
+    "including ones not currently present. Weave them into the skills list, the "
+    "experience bullets, and the summary so they read naturally.\n"
+    "- PROFESSIONAL SUMMARY: rewrite it to a tight 2–3 lines, 30–40 words MAX, "
+    "laser-targeted to this job.\n"
+    "- Replace the FIRST project with a new JD-specific project that showcases the "
+    "job's core technologies and responsibilities.\n"
+    "- Give each work-experience entry 3–4 bullet points, and each project 2–3 "
+    "bullet points.\n"
+    "- In the Technical Skills section, also include the soft skills the JD asks for "
+    "(e.g. communication, collaboration, ownership) if they aren't already there.\n"
+    "- Keep it to ONE page. Preserve the LaTeX structure, commands, and environments "
+    "so it compiles. Do NOT touch anything outside the body you are given.\n"
+    "- This is the user's own résumé; they will review and own every claim.\n"
     "Output EXACTLY this and nothing else:\n"
-    "===TEX===\n<the full edited LaTeX body>\n===END===\n"
+    "===TEX===\n<the full rewritten LaTeX body>\n===END===\n"
     "===CHANGES===\n"
-    '{"changes": ["short note per change"], "could_not_add": ["unaddable jd keyword"]}\n'
+    '{"changes": ["what you changed, one per item"], '
+    '"added": ["each skill / project / claim you ADDED that was not in the original"]}\n'
     "===ENDCHANGES==="
 )
-
-_FAB_SYS = (
-    "You are a strict résumé fact-checker. Compare an ORIGINAL résumé body to an "
-    "EDITED one and list every factual claim in EDITED that is NOT supported by "
-    "ORIGINAL — any new employer, job title, date, number/metric, certification, "
-    "degree, or skill. Rephrasing or reordering existing facts is NOT a fabrication. "
-    "Return ONLY JSON of exactly this shape, no prose: "
-    '{"flags": ["the unsupported claim"]}. Empty list if nothing was fabricated.'
-)
-
-
-class _Flags(BaseModel):
-    flags: list[str] = []
 
 
 def _parse_edit(resp: str) -> tuple[str, list[str], list[str]]:
@@ -80,24 +73,24 @@ def _parse_edit(resp: str) -> tuple[str, list[str], list[str]]:
         raise ValueError("no ===TEX=== block in edit response")
     new_body = m.group(1)
     changes: list[str] = []
-    could_not_add: list[str] = []
+    added: list[str] = []
     cm = re.search(r"===CHANGES===\s*(.*?)\s*(?:===ENDCHANGES===|$)", resp, re.S)
     if cm:
         try:
             data = llm._loads(cm.group(1))
             changes = data.get("changes") or []
-            could_not_add = data.get("could_not_add") or []
+            added = data.get("added") or []
         except Exception:
             pass  # sentinels parsed; a malformed changes block just yields empty lists
-    return new_body, changes, could_not_add
+    return new_body, changes, added
 
 
 def _edit_body(body: str, jd_text: str, ats: AtsScore, error: str | None = None):
     user = (
         f"JOB DESCRIPTION:\n{jd_text}\n\n"
-        f"MISSING JD KEYWORDS (close honestly where evidenced; list the rest in "
-        f"could_not_add): {ats.missing}\n\n"
-        f"RÉSUMÉ BODY (LaTeX — edit ONLY this):\n{body}"
+        f"REQUIRED JD KEYWORDS TO COVER: {ats.required_keywords}\n"
+        f"CURRENTLY MISSING — make sure these now appear in the résumé: {ats.missing}\n\n"
+        f"RÉSUMÉ BODY (LaTeX — rewrite ONLY this):\n{body}"
     )
     if error:
         user += f"\n\nYOUR PREVIOUS ATTEMPT FAILED: {error}\nReturn a corrected version."
@@ -105,20 +98,8 @@ def _edit_body(body: str, jd_text: str, ats: AtsScore, error: str | None = None)
     return _parse_edit(resp)
 
 
-def fabrication_check(old_body: str, new_body: str) -> list[str]:
-    """Independent verifier: flags claims in the edit not supported by the original."""
-    out = llm.chat(
-        [
-            {"role": "system", "content": _FAB_SYS},
-            {"role": "user", "content": f"ORIGINAL:\n{old_body}\n\nEDITED:\n{new_body}"},
-        ],
-        format=_Flags.model_json_schema(),
-    )
-    return _Flags.model_validate(out).flags
-
-
 def _baseline(tex: str, **over) -> ImproveResult:
-    """Never-worse fallback: return the original, its real compile/page status."""
+    """Compile-failure fallback: return the original with its real compile/page status."""
     r = render_tex(tex)
     return ImproveResult(
         tex=tex,
@@ -130,50 +111,32 @@ def _baseline(tex: str, **over) -> ImproveResult:
 
 
 def improve(tex: str, jd_text: str, ats: AtsScore) -> ImproveResult:
-    """One improvement pass. Returns an improved, compile-validated, ≤1-page,
-    non-fabricated `.tex` + change-log — or the untouched original if no valid,
-    honest improvement is found (never a broken/2-page/fabricated résumé)."""
+    """One aggressive tailoring pass. Returns a compile-validated, ≤1-page rewrite
+    that maximizes JD match + an `added` review list — or the untouched original if
+    no candidate compiles to one page (never ship a broken/2-page résumé)."""
     preamble, body, closing = split_tex(tex)
-    anchors = [t for t in ats.matched if t in body][:5]  # real facts that must survive
     error: str | None = None
-    last_flags: list[str] = []  # fabrication from the final attempt, if it never came clean
 
     for _ in range(1 + IMPROVER_COMPILE_RETRIES):
         try:
-            new_body, changes, could_not_add = _edit_body(body, jd_text, ats, error)
+            new_body, changes, added = _edit_body(body, jd_text, ats, error)
         except Exception as e:
             error = f"could not parse the edit ({e})"
             continue
 
         new_tex = reassemble(preamble, new_body, closing)
-        r = render_tex(new_tex, expect=anchors)
+        r = render_tex(new_tex)
         if not (r.guards.compiles and r.guards.single_page and r.guards.extraction_clean):
-            error = "; ".join(r.errors) or "edit did not compile to one clean page"
-            continue
-
-        last_flags = fabrication_check(body, new_body)
-        if last_flags:  # feed the fabrication back so the next attempt drops it
-            error = (
-                "You fabricated unsupported claims: "
-                + "; ".join(last_flags)
-                + ". Remove them and use ONLY facts stated in the original résumé."
-            )
+            error = "; ".join(r.errors) or "the rewrite did not compile to one clean page"
             continue
 
         return ImproveResult(
             tex=new_tex,
             changed=True,
             changes=changes,
-            could_not_add=could_not_add,
+            added=added,
             compiled=True,
             single_page=True,
         )
 
-    # exhausted: never ship a broken/fabricated résumé — keep the honest original.
-    if last_flags:
-        return _baseline(
-            tex,
-            fabrication_flags=last_flags,
-            warnings=["could not produce a non-fabricated improvement; kept the original"],
-        )
-    return _baseline(tex, warnings=["no valid ≤1-page improvement found; kept the original"])
+    return _baseline(tex, warnings=["could not produce a valid ≤1-page rewrite; kept the original"])

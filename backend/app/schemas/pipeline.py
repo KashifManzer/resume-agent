@@ -17,7 +17,7 @@ class Report(BaseModel):
     ats_before: AtsScore
     ats_after: AtsScore
     changes: list[str] = []
-    could_not_add: list[str] = []
+    added: list[str] = []  # skills/projects/claims added by the aggressive rewrite — review list
     hiring_agent: HiringAgentReport | None = None  # None if the gate couldn't run
     warnings: list[str] = []
 

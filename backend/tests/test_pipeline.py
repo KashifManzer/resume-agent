@@ -56,7 +56,7 @@ def _mock(monkeypatch, scores, *, warning=None, hiring=None):
         pipeline.improver,
         "improve",
         lambda tex, jd, ats: ImproveResult(
-            tex=tex + "+", changed=True, changes=["change"], could_not_add=["Rust"],
+            tex=tex + "+", changed=True, changes=["change"], added=["Rust"],
             compiled=True, single_page=True,
         ),
     )
@@ -79,7 +79,7 @@ def test_inner_loop_keeps_best_stops_on_plateau_gate_once(monkeypatch):
     assert r.report.ats_after.overall == 85
     assert len(calls) == 1  # hiring-agent called exactly once
     assert r.report.changes == ["change", "change"]  # only the 2 kept rounds
-    assert r.report.could_not_add == ["Rust"]  # deduped
+    assert r.report.added == ["Rust"]  # deduped
     assert r.report.hiring_agent is not None
     assert r.report.selection_warning is None
 

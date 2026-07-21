@@ -38,64 +38,41 @@ def test_split_boundaries():
     assert r"\begin{document}" not in body and r"\end{document}" not in body
 
 
-# --- fabrication: any flag reverts the whole edit --------------------------
-
-
-def test_fabrication_flag_reverts_to_original(monkeypatch):
-    _, body, _ = improver.split_tex(GOOD)
-    monkeypatch.setattr(
-        improver, "_edit_body", lambda b, jd, ats, err=None: (body + "\n% test-edit\n", ["tweaked"], [])
-    )
-    monkeypatch.setattr(
-        improver, "fabrication_check", lambda old, new: ["invented: Staff Engineer at Google"]
-    )
-    result = improver.improve(GOOD, "jd", _ats())
-    assert result.changed is False
-    assert result.tex == GOOD  # reverted, byte-identical
-    assert result.fabrication_flags == ["invented: Staff Engineer at Google"]
-    assert result.warnings
-
-
 # --- never-worse: no valid candidate → original, changed=False -------------
 
 
 def test_never_worse_returns_original(monkeypatch):
     monkeypatch.setattr(
-        improver, "_edit_body", lambda b, jd, ats, err=None: (r"\undefinedcmd breaks compile", ["x"], [])
+        improver,
+        "_edit_body",
+        lambda b, jd, ats, err=None: (r"\undefinedcmd breaks compile", ["x"], ["y"]),
     )
-    monkeypatch.setattr(improver, "fabrication_check", lambda old, new: [])
     result = improver.improve(GOOD, "jd", _ats())
     assert result.changed is False
     assert result.tex == GOOD
-    assert result.compiled is True  # reflects the original, which does compile
+    assert result.compiled is True  # the original does compile
     assert result.single_page is True
     assert result.warnings
 
 
-# --- live: real edit respects the integrity boundaries ---------------------
+# --- live: aggressive rewrite closes gaps and stays valid ------------------
 
 
 @pytest.mark.skipif(not os.getenv("OLLAMA_API_KEY"), reason="OLLAMA_API_KEY not set")
-def test_live_improve_is_valid_and_faithful():
+def test_live_aggressive_rewrite_closes_gaps():
     from app.services.ats import score_ats
 
-    jd = (FIXTURES / "jd_sample.txt").read_text()
+    jd = (FIXTURES / "jd_missingskill.txt").read_text()  # demands Rust / Elixir (absent)
     ats = score_ats(jd, render_tex(GOOD).text)
     result = improver.improve(GOOD, jd, ats)
+
     assert result.compiled is True
     assert result.single_page is True
-    assert result.fabrication_flags == []
-    # preamble byte-identical (structural format-respect)
+    assert result.changed is True
+    assert result.changes  # a change-log rode along
+    assert result.added  # it reports what it newly claimed
+    # preamble byte-identical (structural format-respect held)
     assert improver.split_tex(result.tex)[0] == improver.split_tex(GOOD)[0]
-
-
-@pytest.mark.skipif(not os.getenv("OLLAMA_API_KEY"), reason="OLLAMA_API_KEY not set")
-def test_live_honesty_absent_skill_not_invented():
-    from app.services.ats import score_ats
-
-    jd = (FIXTURES / "jd_missingskill.txt").read_text()
-    ats = score_ats(jd, render_tex(GOOD).text)
-    result = improver.improve(GOOD, jd, ats)
-    assert result.fabrication_flags == []  # did not invent the absent skill
-    blob = " ".join(result.could_not_add).lower()
-    assert "rust" in blob or "elixir" in blob  # surfaced as unaddable, not faked
+    # a previously-missing keyword now appears in the résumé
+    tex_lower = result.tex.lower()
+    assert any(m.lower() in tex_lower for m in ats.missing)

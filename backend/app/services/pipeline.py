@@ -50,7 +50,7 @@ def run_pipeline(
 
     best_tex, best_ats, best_pdf = picked_tex, ats_before, base.pdf_path
     changes: list[str] = []
-    could_not_add: list[str] = []
+    added: list[str] = []
 
     # 2. Inner loop — the only optimization loop. Keep a candidate only if it
     #    compiles, is ≤1 page, and improves `overall`; stop early on plateau/target.
@@ -69,7 +69,7 @@ def run_pipeline(
         # accepted: record only what we actually keep, so the report matches the final résumé
         best_tex, best_ats, best_pdf = imp.tex, cand_ats, cand.pdf_path
         changes += imp.changes
-        could_not_add += imp.could_not_add
+        added += imp.added
         if best_ats.overall >= TARGET_ATS:
             break
 
@@ -90,7 +90,7 @@ def run_pipeline(
         ats_before=ats_before,
         ats_after=best_ats,
         changes=changes,
-        could_not_add=list(dict.fromkeys(could_not_add)),  # dedup, preserve order
+        added=list(dict.fromkeys(added)),  # dedup, preserve order
         hiring_agent=hiring,
         warnings=warnings,
     )

@@ -22,7 +22,7 @@ export interface Report {
   ats_before: AtsScore
   ats_after: AtsScore
   changes: string[]
-  could_not_add: string[]
+  added: string[]
   hiring_agent: HiringAgentReport | null
   warnings: string[]
 }

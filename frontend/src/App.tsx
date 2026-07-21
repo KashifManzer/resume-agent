@@ -28,16 +28,33 @@ function Loading() {
   )
 }
 
+function setJobParam(id: string | null) {
+  const url = new URL(window.location.href)
+  if (id) url.searchParams.set('job', id)
+  else url.searchParams.delete('job')
+  window.history.replaceState({}, '', url)
+}
+
 export default function App() {
-  const [jobId, setJobId] = useState<string | null>(null)
+  // resumable: a job id in the URL (?job=…) survives reloads and is shareable
+  const [jobId, setJobId] = useState<string | null>(
+    () => new URLSearchParams(window.location.search).get('job'),
+  )
   const { data: job } = useJob(jobId)
-  const reset = () => setJobId(null)
+  const start = (id: string) => {
+    setJobId(id)
+    setJobParam(id)
+  }
+  const reset = () => {
+    setJobId(null)
+    setJobParam(null)
+  }
 
   return (
     <div className="min-h-svh">
       <Masthead />
       {!jobId ? (
-        <Compose onCreated={setJobId} />
+        <Compose onCreated={start} />
       ) : !job ? (
         <Loading />
       ) : job.status === 'done' && job.result ? (

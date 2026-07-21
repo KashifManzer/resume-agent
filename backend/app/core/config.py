@@ -22,7 +22,7 @@ IMPROVER_COMPILE_RETRIES = int(os.environ.get("IMPROVER_COMPILE_RETRIES", "2"))
 # Orchestrator loops + quality gate (design §9).
 INNER_LOOP_MAX = int(os.environ.get("INNER_LOOP_MAX", "3"))  # improver ↔ ATS, the only optimization loop
 OUTER_LOOP_MAX = int(os.environ.get("OUTER_LOOP_MAX", "5"))  # user-feedback rounds
-TARGET_ATS = int(os.environ.get("TARGET_ATS", "92"))  # inner loop stops early at/above this
+TARGET_ATS = int(os.environ.get("TARGET_ATS", "95"))  # inner loop stops early at/above this
 HIRING_AGENT_GATE = float(os.environ.get("HIRING_AGENT_GATE", "80"))  # gate + advice, never looped
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")  # hiring-agent GitHub enrichment (60→5000 req/hr)
 HIRING_AGENT_DIR = Path(

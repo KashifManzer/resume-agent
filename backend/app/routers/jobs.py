@@ -61,4 +61,11 @@ def get_pdf(job_id: str):
         raise HTTPException(status_code=404, detail="job not found")
     if job.result is None:
         raise HTTPException(status_code=404, detail="no PDF yet")
-    return FileResponse(job.result.pdf_path, media_type="application/pdf", filename="resume.pdf")
+    # inline so the UI can render it in an <iframe>; the download button's
+    # `download` attribute still forces a save client-side.
+    return FileResponse(
+        job.result.pdf_path,
+        media_type="application/pdf",
+        filename="resume.pdf",
+        content_disposition_type="inline",
+    )
