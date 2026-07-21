@@ -45,15 +45,23 @@ export function Dropzone({
           add(e.dataTransfer.files)
         }}
         className={cn(
-          'group flex cursor-pointer flex-col items-center justify-center gap-2 rounded-md border border-dashed border-ink/30 bg-paper/40 px-6 py-10 text-center transition-colors outline-none',
-          'hover:border-accent/60 hover:bg-paper-2/60 focus-visible:ring-2 focus-visible:ring-ring',
-          over && 'border-accent bg-paper-2 ring-2 ring-accent/40',
+          'sheet group relative flex cursor-pointer flex-col items-center justify-center gap-2 px-6 py-12 text-center transition-all outline-none',
+          'hover:-translate-y-0.5 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-desk',
+          over && 'ring-2 ring-marigold',
         )}
       >
-        <span className="font-mono text-xs tracking-widest text-ink-soft uppercase">
+        {/* dashed proofing border, inset from the sheet edge */}
+        <span
+          aria-hidden
+          className={cn(
+            'pointer-events-none absolute inset-2.5 rounded-sm border border-dashed transition-colors',
+            over ? 'border-marigold' : 'border-ink/25 group-hover:border-accent/60',
+          )}
+        />
+        <span className="font-mono text-[11px] tracking-[0.28em] text-ink-soft uppercase">
           drop &middot; browse
         </span>
-        <span className="font-serif text-lg text-ink">Add your résumé sources</span>
+        <span className="font-serif text-2xl text-ink">Add your résumé sources</span>
         <span className="text-sm text-ink-soft">
           One or more <code className="font-mono text-accent">.tex</code> files — we&rsquo;ll pick the
           closest to the job.
@@ -73,7 +81,7 @@ export function Dropzone({
       />
 
       {files.length > 0 && (
-        <ul className="divide-y divide-border rounded-md border border-border bg-paper-2/70">
+        <ul className="sheet-sm divide-y divide-border overflow-hidden">
           {files.map((f) => (
             <li key={f.name} className="flex items-center justify-between gap-3 px-4 py-2.5">
               <span className="flex min-w-0 items-center gap-2">

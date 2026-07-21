@@ -7,22 +7,30 @@ import { Run } from './pages/Run'
 
 function Masthead() {
   return (
-    <header className="border-b border-ink/15">
-      <div className="mx-auto flex max-w-6xl items-baseline justify-between px-6 py-4">
-        <span className="font-serif text-xl tracking-tight text-ink">
-          Résumé<span className="text-accent">·</span>Proof
-        </span>
-        <span className="font-mono text-[10px] tracking-[0.3em] text-ink-soft uppercase">
-          tailored · honest · one page
-        </span>
+    <header className="relative">
+      <div className="mx-auto max-w-6xl px-6">
+        <div className="border-t border-desk-line pt-3 font-mono text-[10px] tracking-[0.32em] text-cream-soft uppercase">
+          Est. on the desk
+        </div>
+        <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 pb-3">
+          <span className="font-serif text-2xl font-medium tracking-tight text-cream">
+            Résumé<span className="text-marigold">·</span>Proof
+          </span>
+          <span className="font-mono text-[10px] tracking-[0.32em] text-cream-soft uppercase">
+            tailored · honest · one page
+          </span>
+        </div>
       </div>
+      {/* the masthead's double rule — thick marigold over a hairline */}
+      <div className="h-[3px] bg-marigold" />
+      <div className="h-px bg-desk-line" />
     </header>
   )
 }
 
 function Loading() {
   return (
-    <div className="mx-auto max-w-2xl px-6 py-32 text-center font-mono text-sm tracking-widest text-ink-soft uppercase">
+    <div className="mx-auto max-w-2xl px-6 py-32 text-center font-mono text-sm tracking-[0.3em] text-cream-soft uppercase">
       loading the desk…
     </div>
   )
@@ -51,7 +59,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-svh">
+    <div className="min-h-svh overflow-x-clip">
       <Masthead />
       {!jobId ? (
         <Compose onCreated={start} />

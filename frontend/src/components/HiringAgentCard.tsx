@@ -11,16 +11,16 @@ const label = (k: string) => k.replace(/_/g, ' ')
 
 export function HiringAgentCard({ report }: { report: HiringAgentReport }) {
   return (
-    <section className="rounded-lg border border-border bg-paper-2/80 p-6">
+    <section className="sheet p-7">
       <header className="flex items-baseline justify-between">
-        <h3 className="font-serif text-xl text-ink">Quality gate</h3>
-        <div className="font-mono text-3xl text-ink tabular-nums">
+        <h3 className="font-serif text-2xl text-ink">Quality gate</h3>
+        <div className="font-mono text-3xl font-medium text-ink tabular-nums">
           {Math.round(report.overall)}
           <span className="text-base text-ink-soft">/120</span>
         </div>
       </header>
 
-      <div className="mt-5 space-y-2.5">
+      <div className="mt-6 space-y-3">
         {Object.entries(report.categories).map(([k, v]) => {
           const max = CATEGORY_MAX[k] ?? 100
           return (
@@ -28,7 +28,7 @@ export function HiringAgentCard({ report }: { report: HiringAgentReport }) {
               <span className="font-mono text-xs text-ink-soft capitalize">{label(k)}</span>
               <span className="h-1.5 overflow-hidden rounded-full bg-ink/10">
                 <span
-                  className="block h-full rounded-full bg-accent"
+                  className="block h-full rounded-full bg-marigold"
                   style={{ width: `${Math.min(100, (v / max) * 100)}%` }}
                 />
               </span>
@@ -41,14 +41,14 @@ export function HiringAgentCard({ report }: { report: HiringAgentReport }) {
       </div>
 
       {report.note && (
-        <p className="mt-5 border-l-2 border-accent/50 pl-3 text-sm leading-relaxed text-ink-soft italic">
+        <p className="mt-6 border-l-[3px] border-marigold pl-4 text-sm leading-relaxed text-ink-soft italic">
           {report.note}
         </p>
       )}
 
       {report.advice.length > 0 && (
-        <div className="mt-5">
-          <div className="mb-2 font-mono text-[11px] tracking-[0.2em] text-ink-soft uppercase">
+        <div className="mt-6">
+          <div className="mb-2.5 font-mono text-[11px] tracking-[0.22em] text-ink-soft uppercase">
             honest levers
           </div>
           <ul className="space-y-1.5">
