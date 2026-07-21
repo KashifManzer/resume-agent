@@ -11,3 +11,6 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:31b-cloud")
 
 # ATS blend: weight on grounded keyword coverage vs the LLM fit judge.
 ATS_COVERAGE_WEIGHT = float(os.environ.get("ATS_COVERAGE_WEIGHT", "0.6"))
+
+# Selector: best score below this (0-100) → pick closest but warn "none close".
+CLOSE_THRESHOLD = int(os.environ.get("CLOSE_THRESHOLD", "40"))

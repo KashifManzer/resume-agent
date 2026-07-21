@@ -94,10 +94,12 @@ def llm_fit(jd_text: str, resume_text: str) -> tuple[int, str]:
     return max(0, min(100, fit.score)), fit.rationale
 
 
-def score_ats(jd_text: str, resume_text: str) -> AtsScore:
-    """Orchestrate: extract keywords -> grounded coverage + independent fit ->
-    blended overall. `missing` is the gap list that drives T5 and the report."""
-    keywords = extract_jd_keywords(jd_text)
+def score_with_keywords(
+    keywords: list[JdKeyword], jd_text: str, resume_text: str
+) -> AtsScore:
+    """Blend grounded coverage + independent fit against pre-extracted JD
+    keywords. Lets callers (T4 selector) extract the JD once and score N
+    résumés against it. `missing` is the gap list that drives T5 and the report."""
     pct, matched, missing = keyword_coverage(keywords, resume_text)
     fit, rationale = llm_fit(jd_text, resume_text)
 
@@ -112,3 +114,8 @@ def score_ats(jd_text: str, resume_text: str) -> AtsScore:
         missing=missing,
         rationale=rationale,
     )
+
+
+def score_ats(jd_text: str, resume_text: str) -> AtsScore:
+    """Orchestrate: extract JD keywords -> score. The single-résumé entry point."""
+    return score_with_keywords(extract_jd_keywords(jd_text), jd_text, resume_text)
