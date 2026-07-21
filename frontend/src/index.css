@@ -1,111 +1,140 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/fraunces";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ── The typesetter's proofing desk ─────────────────────────────────────────
+   Warm paper ground, deep warm ink, ONE marigold highlighter accent for
+   matched keywords + score highlights, muted brick-red for gaps. ─────────── */
+@theme inline {
+  --font-sans: 'Fraunces Variable', Georgia, serif;
+  --font-serif: 'Fraunces Variable', Georgia, serif;
+  --font-heading: 'Fraunces Variable', Georgia, serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* concept tokens */
+  --color-paper: var(--paper);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-highlight: var(--highlight);
+  --color-gap: var(--gap);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}
+
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
-  --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+  --paper: #f0e7d6;
+  --paper-2: #f9f2e4;
+  --ink: #241c12;
+  --ink-soft: #6d6151;
+  --accent-ink: #b3720f; /* marigold ink for text/borders */
+  --highlight: #ebc14e; /* highlighter swipe */
+  --gap: #a83a2c; /* muted brick red for missing */
+  --line: rgba(36, 28, 18, 0.16);
 
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
+  --radius: 0.3rem;
 
-  font: 18px/145% var(--sans);
-  letter-spacing: 0.18px;
-  color-scheme: light dark;
-  color: var(--text);
-  background: var(--bg);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  --background: var(--paper);
+  --foreground: var(--ink);
+  --card: var(--paper-2);
+  --card-foreground: var(--ink);
+  --popover: var(--paper-2);
+  --popover-foreground: var(--ink);
+  --primary: var(--ink);
+  --primary-foreground: #f6efe0;
+  --secondary: #e7dcc6;
+  --secondary-foreground: var(--ink);
+  --muted: #e7dcc6;
+  --muted-foreground: var(--ink-soft);
+  --accent: var(--accent-ink);
+  --accent-foreground: #f6efe0;
+  --destructive: var(--gap);
+  --border: var(--line);
+  --input: var(--line);
+  --ring: var(--accent-ink);
+}
 
-  @media (max-width: 1024px) {
-    font-size: 16px;
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    /* faint paper grain + a warm vignette so it reads like a lit desk */
+    background-image:
+      radial-gradient(120% 80% at 50% -10%, rgba(255, 251, 240, 0.7), transparent 60%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+    background-attachment: fixed;
+    font-optical-sizing: auto;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  html {
+    @apply font-sans;
+  }
+  ::selection {
+    background: var(--highlight);
+    color: var(--ink);
   }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
-  }
-
-  #social .button-icon {
-    filter: invert(1) brightness(2);
-  }
+/* Signature: highlighter marks over keyword coverage. The ink text is always
+   visible; the highlight sweeps in under it (robust — no invisible content). */
+.mark-hl {
+  background-image: linear-gradient(120deg, var(--highlight), var(--highlight));
+  background-repeat: no-repeat;
+  background-position: 0 62%;
+  background-size: 0% 82%;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  padding: 0.06em 0.28em;
+  border-radius: 1px;
+  animation: hl-in 0.55s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
-
-#root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
-}
-
-h1,
-h2 {
-  font-family: var(--heading);
-  font-weight: 500;
-  color: var(--text-h);
-}
-
-h1 {
-  font-size: 56px;
-  letter-spacing: -1.68px;
-  margin: 32px 0;
-  @media (max-width: 1024px) {
-    font-size: 36px;
-    margin: 20px 0;
+@keyframes hl-in {
+  to {
+    background-size: 100% 82%;
   }
 }
-h2 {
-  font-size: 24px;
-  line-height: 118%;
-  letter-spacing: -0.24px;
-  margin: 0 0 8px;
-  @media (max-width: 1024px) {
-    font-size: 20px;
+@media (prefers-reduced-motion: reduce) {
+  .mark-hl {
+    background-size: 100% 82%;
+    animation: none;
   }
 }
-p {
-  margin: 0;
+.mark-gap {
+  color: var(--gap);
+  text-decoration: underline wavy var(--gap);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1.5px;
 }
 
-code,
-.counter {
-  font-family: var(--mono);
-  display: inline-flex;
-  border-radius: 4px;
-  color: var(--text-h);
-}
-
-code {
-  font-size: 15px;
-  line-height: 135%;
-  padding: 4px 8px;
-  background: var(--code-bg);
+/* hairline ink rule, like a ruled proofing sheet */
+.rule-ink {
+  border-color: var(--line);
 }
