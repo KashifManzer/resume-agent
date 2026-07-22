@@ -4,7 +4,7 @@ import { motion } from 'motion/react'
 import { Dropzone } from '@/components/Dropzone'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { useCreateJob } from '@/hooks/useJobs'
+import { useCreateJob, useJdFromUrl } from '@/hooks/useJobs'
 
 const stagger = {
   hidden: {},
@@ -26,13 +26,21 @@ function Eyebrow({ n, children }: { n: string; children: React.ReactNode }) {
 
 export function Compose({ onCreated }: { onCreated: (id: string) => void }) {
   const [jd, setJd] = useState('')
+  const [link, setLink] = useState('')
   const [files, setFiles] = useState<File[]>([])
   const create = useCreateJob()
+  const jdFetch = useJdFromUrl()
   const canSubmit = jd.trim().length > 20 && files.length > 0 && !create.isPending
 
   function submit() {
     if (!canSubmit) return
     create.mutate({ jd, files }, { onSuccess: (r) => onCreated(r.job_id) })
+  }
+
+  function fetchLink() {
+    const u = link.trim()
+    if (!u || jdFetch.isPending) return
+    jdFetch.mutate(u, { onSuccess: (src) => setJd(src.text) })
   }
 
   return (
@@ -60,6 +68,44 @@ export function Compose({ onCreated }: { onCreated: (id: string) => void }) {
         <label htmlFor="jd" className="block">
           <Eyebrow n="01">the brief · job description</Eyebrow>
         </label>
+
+        {/* paste a job link → fills the JD field (Workday · Greenhouse · Lever · Ashby, else generic) */}
+        <div className="space-y-2">
+          <div className="flex gap-2">
+            <input
+              type="url"
+              value={link}
+              onChange={(e) => setLink(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), fetchLink())}
+              placeholder="…or paste a job link (Workday · Greenhouse · Lever · Ashby)"
+              className="min-w-0 flex-1 rounded-md border border-cream-soft/20 bg-transparent px-3 py-2.5 font-mono text-xs text-cream placeholder:text-cream-soft/50 focus:border-marigold focus:outline-none"
+            />
+            <Button
+              onClick={fetchLink}
+              disabled={!link.trim() || jdFetch.isPending}
+              className="rounded-md bg-cream-soft/10 px-4 font-mono text-xs tracking-[0.15em] text-cream uppercase hover:bg-cream-soft/20 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {jdFetch.isPending ? 'fetching…' : 'fetch'}
+            </Button>
+          </div>
+          {jdFetch.isError && (
+            <p role="alert" className="font-mono text-xs text-gap-hi">
+              {(jdFetch.error as Error).message}
+            </p>
+          )}
+          {jdFetch.data && (
+            <p className="font-mono text-xs text-cream-soft">
+              filled from <span className="text-marigold">{jdFetch.data.adapter}</span>
+              {jdFetch.data.title ? ` · ${jdFetch.data.title}` : ''} — review &amp; edit below before running.
+            </p>
+          )}
+          {jdFetch.data?.warnings?.map((w) => (
+            <p key={w} className="font-mono text-xs text-gap-hi">
+              ⚠ {w}
+            </p>
+          ))}
+        </div>
+
         {/* the brief, laid on a proofing sheet with a red margin rule */}
         <div className="sheet relative overflow-hidden">
           <div aria-hidden className="pointer-events-none absolute inset-y-0 left-11 w-px bg-gap/30" />

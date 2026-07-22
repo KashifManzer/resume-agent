@@ -28,3 +28,9 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")  # hiring-agent GitHub enrichment 
 HIRING_AGENT_DIR = Path(
     os.environ.get("HIRING_AGENT_DIR", str(Path(__file__).resolve().parents[3] / "vendor" / "hiring-agent"))
 )
+
+# JD-from-URL fetch (T10): guards on fetching arbitrary user-supplied links.
+JD_FETCH_TIMEOUT = float(os.environ.get("JD_FETCH_TIMEOUT", "10"))  # per-request seconds
+JD_FETCH_MAX_BYTES = int(os.environ.get("JD_FETCH_MAX_BYTES", str(5 * 1024 * 1024)))  # covers Ashby's ~1.7MB board
+JD_FETCH_MAX_REDIRECTS = int(os.environ.get("JD_FETCH_MAX_REDIRECTS", "3"))
+JD_MIN_CHARS = int(os.environ.get("JD_MIN_CHARS", "200"))  # generic extraction below this → warn

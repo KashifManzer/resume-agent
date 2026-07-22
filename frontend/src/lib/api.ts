@@ -1,4 +1,4 @@
-import type { Job } from './types'
+import type { Job, JdSource } from './types'
 
 async function ok(res: Response): Promise<Response> {
   if (!res.ok) {
@@ -13,6 +13,18 @@ export async function createJob(jd: string, files: File[]): Promise<{ job_id: st
   form.append('jd', jd)
   for (const f of files) form.append('files', f, f.name)
   const res = await ok(await fetch('/jobs', { method: 'POST', body: form }))
+  return res.json()
+}
+
+/** Fetch a JD from a job-posting link; the caller drops `text` into the JD field. */
+export async function fetchJdFromUrl(url: string): Promise<JdSource> {
+  const res = await ok(
+    await fetch('/jd/from-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    }),
+  )
   return res.json()
 }
 

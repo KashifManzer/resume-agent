@@ -14,6 +14,7 @@ export default defineConfig({
     proxy: {
       '/health': 'http://localhost:8000',
       '/jobs': 'http://localhost:8000',
+      '/jd': 'http://localhost:8000',
     },
   },
 })

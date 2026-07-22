@@ -33,6 +33,16 @@ export interface PipelineResult {
   report: Report
 }
 
+export interface JdSource {
+  text: string
+  title: string | null
+  location: string | null
+  company: string | null
+  source_url: string
+  adapter: string
+  warnings: string[]
+}
+
 export type JobStatus = 'queued' | 'running' | 'done' | 'error'
 
 export interface Job {

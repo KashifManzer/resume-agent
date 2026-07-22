@@ -1,12 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { createJob, getJob, sendFeedback } from '@/lib/api'
+import { createJob, fetchJdFromUrl, getJob, sendFeedback } from '@/lib/api'
 import type { Job } from '@/lib/types'
 
 export function useCreateJob() {
   return useMutation({
     mutationFn: ({ jd, files }: { jd: string; files: File[] }) => createJob(jd, files),
   })
+}
+
+/** Fetch a JD from a job link (T10). Caller fills the editable JD field on success. */
+export function useJdFromUrl() {
+  return useMutation({ mutationFn: (url: string) => fetchJdFromUrl(url) })
 }
 
 /** Poll a job every 2s until it finishes (long jobs — minutes). */
