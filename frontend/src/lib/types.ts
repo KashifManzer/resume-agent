@@ -33,6 +33,33 @@ export interface PipelineResult {
   report: Report
 }
 
+export interface Links {
+  github: string | null
+  linkedin: string | null
+  portfolio: string | null
+}
+
+export interface Profile {
+  id: string
+  name: string | null
+  email: string | null
+  phone: string | null
+  location: string | null
+  work_auth: string | null
+  links: Links
+}
+
+export type ProfileIn = Omit<Profile, 'id'>
+
+export interface ResumeMeta {
+  id: string
+  label: string | null
+  format: string
+  filename: string | null
+  is_default: boolean
+  created_at: string
+}
+
 export interface JdSource {
   text: string
   title: string | null

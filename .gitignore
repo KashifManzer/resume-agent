@@ -21,8 +21,14 @@ frontend/dist/
 # third-party clone (spike, not vendored)
 external/
 
+# user data: SQLite DB + uploaded résumé files (T11) — never commit
+backend/data/
+
 # local working tickets (for us, not shared)
 docs/tickets/
+
+# magnum-memory (personal/local — never commit)
+.claude/memory/
 
 # vendored hiring-agent: track the source, ignore its runtime artifacts
 vendor/hiring-agent/.venv/

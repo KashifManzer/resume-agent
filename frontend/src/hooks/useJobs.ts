@@ -5,7 +5,8 @@ import type { Job } from '@/lib/types'
 
 export function useCreateJob() {
   return useMutation({
-    mutationFn: ({ jd, files }: { jd: string; files: File[] }) => createJob(jd, files),
+    mutationFn: ({ jd, files, resumeIds }: { jd: string; files?: File[]; resumeIds?: string[] }) =>
+      createJob(jd, { files, resumeIds }),
   })
 }
 

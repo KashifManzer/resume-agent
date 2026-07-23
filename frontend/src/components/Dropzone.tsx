@@ -5,9 +5,13 @@ import { cn } from '@/lib/utils'
 export function Dropzone({
   files,
   onChange,
+  title = 'Add your résumé sources',
+  hint,
 }: {
   files: File[]
   onChange: (files: File[]) => void
+  title?: string
+  hint?: React.ReactNode
 }) {
   const [over, setOver] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -61,10 +65,14 @@ export function Dropzone({
         <span className="font-mono text-[11px] tracking-[0.28em] text-ink-soft uppercase">
           drop &middot; browse
         </span>
-        <span className="font-serif text-2xl text-ink">Add your résumé sources</span>
+        <span className="font-serif text-2xl text-ink">{title}</span>
         <span className="text-sm text-ink-soft">
-          One or more <code className="font-mono text-accent">.tex</code> files — we&rsquo;ll pick the
-          closest to the job.
+          {hint ?? (
+            <>
+              One or more <code className="font-mono text-accent">.tex</code> files — we&rsquo;ll pick
+              the closest to the job.
+            </>
+          )}
         </span>
       </div>
 

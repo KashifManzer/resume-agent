@@ -5,9 +5,12 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Uploa
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from app import db
+from app.models import Resume
+from app.routers.profile import PID
 from app.schemas.job import Job
 from app.schemas.selector import ResumeInput
-from app.services import jobs
+from app.services import jobs, storage
 
 router = APIRouter()
 
@@ -16,16 +19,37 @@ class FeedbackIn(BaseModel):
     feedback: str
 
 
+def _resumes_from_library(resume_ids: list[str]) -> list[ResumeInput]:
+    """Resolve library résumé ids → ResumeInput(id, tex); the pipeline still
+    receives exactly what an ad-hoc upload gives it."""
+    out = []
+    with db.SessionLocal() as session:
+        for rid in resume_ids:
+            r = session.get(Resume, rid)
+            if r is None or r.profile_id != PID:
+                raise HTTPException(status_code=404, detail=f"résumé not found: {rid}")
+            tex = storage.open_resume_file(PID, rid, "source.tex").decode("utf-8", "replace")
+            out.append(ResumeInput(id=r.label or r.filename or r.id, tex=tex))
+    return out
+
+
 @router.post("/jobs")
 async def create_job(
     background: BackgroundTasks,
     jd: str = Form(...),
-    files: list[UploadFile] = File(...),
+    resume_ids: list[str] = Form(default=[]),
+    files: list[UploadFile] = File(default=[]),
 ) -> dict[str, str]:
-    resumes = [
-        ResumeInput(id=f.filename or f"resume{i}", tex=(await f.read()).decode("utf-8", "replace"))
-        for i, f in enumerate(files)
-    ]
+    # ad-hoc upload (as today) OR pick from the library — mirrors JD paste-or-link
+    if files:
+        resumes = [
+            ResumeInput(id=f.filename or f"resume{i}", tex=(await f.read()).decode("utf-8", "replace"))
+            for i, f in enumerate(files)
+        ]
+    elif resume_ids:
+        resumes = _resumes_from_library(resume_ids)
+    else:
+        raise HTTPException(status_code=400, detail="provide resume_ids or files")
     job = jobs.store.create(jd, resumes)
     background.add_task(jobs.store.run, job.id)
     return {"job_id": job.id}

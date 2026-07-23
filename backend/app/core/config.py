@@ -1,6 +1,12 @@
 import os
 from pathlib import Path
 
+# Persistence (T11). Structure in SQLite; résumé bytes on disk under DATA_DIR.
+# ponytail: SQLite is single-writer — flip DATABASE_URL to Postgres at scale
+# (SQLAlchemy makes it a URL change, not a rewrite).
+DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path(__file__).resolve().parents[2] / "data")))
+DB_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DATA_DIR / 'app.db'}")
+
 # LaTeX toolchain; override via env for Docker/deploy where it lives elsewhere.
 LATEXMK_BIN = os.environ.get("LATEXMK_BIN", "latexmk")
 LATEX_ENGINE = os.environ.get("LATEX_ENGINE", "pdflatex")  # -lualatex/-xelatex for fontspec

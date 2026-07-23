@@ -15,6 +15,8 @@ export default defineConfig({
       '/health': 'http://localhost:8000',
       '/jobs': 'http://localhost:8000',
       '/jd': 'http://localhost:8000',
+      '/profile': 'http://localhost:8000',
+      '/resumes': 'http://localhost:8000',
     },
   },
 })
