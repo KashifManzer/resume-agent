@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import Profile, Resume
-from app.schemas.profile import ProfileIn, ProfileOut, ResumeMeta
+from app.schemas.profile import PROFILE_SCALARS, ProfileIn, ProfileOut, ResumeMeta
 from app.services import storage
 
 router = APIRouter()
@@ -31,15 +31,14 @@ def _get_resume(db: Session, rid: str) -> Resume:
 @router.get("/profile")
 def get_profile(db: Session = Depends(get_db)) -> ProfileOut:
     p = db.get(Profile, PID)
-    return ProfileOut(id=p.id, links=p.links or {}, **{k: getattr(p, k) for k in
-                      ("name", "email", "phone", "location", "work_auth")})
+    return ProfileOut(id=p.id, links=p.links or {}, **{k: getattr(p, k) for k in PROFILE_SCALARS})
 
 
 @router.put("/profile")
 def update_profile(body: ProfileIn, db: Session = Depends(get_db)) -> ProfileOut:
     p = db.get(Profile, PID)
-    p.name, p.email, p.phone = body.name, body.email, body.phone
-    p.location, p.work_auth = body.location, body.work_auth
+    for k in PROFILE_SCALARS:
+        setattr(p, k, getattr(body, k))
     p.links = body.links.model_dump()
     db.commit()
     return get_profile(db)

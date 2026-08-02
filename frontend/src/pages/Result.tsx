@@ -17,11 +17,13 @@ export function Result({
   jobId,
   round,
   result,
+  applyUrl,
   onStartOver,
 }: {
   jobId: string
   round: number
   result: PipelineResult
+  applyUrl: string | null
   onStartOver: () => void
 }) {
   const { report } = result
@@ -96,6 +98,36 @@ export function Result({
               Download .tex
             </Button>
           </div>
+
+          {/* T16: close the loop — carry this résumé straight to the posting's
+              apply form, where the installed extension lights up and fills it.
+              Only link-JD runs have an apply URL; pasted runs get the hint. */}
+          {applyUrl ? (
+            <a
+              href={applyUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group mt-3 flex items-center justify-between gap-4 rounded-md border border-marigold/50 bg-marigold/10 px-5 py-3.5 transition hover:bg-marigold/15 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-desk focus-visible:outline-none"
+            >
+              <span className="flex flex-col">
+                <span className="font-mono text-[10px] tracking-[0.26em] text-marigold uppercase">
+                  next · apply
+                </span>
+                <span className="font-serif text-lg text-cream">Apply with this résumé</span>
+              </span>
+              <span
+                aria-hidden
+                className="font-mono text-xl text-marigold transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5"
+              >
+                ↗
+              </span>
+            </a>
+          ) : (
+            <p className="mt-3 rounded-md border border-dashed border-cream-soft/20 px-5 py-3 text-center font-mono text-[11px] leading-relaxed tracking-[0.02em] text-cream-soft">
+              Start from a job <span className="text-cream-soft">link</span> on the desk to enable
+              one-click apply here.
+            </p>
+          )}
         </motion.div>
 
         {/* Right: the marks — scores, coverage, what we added, revisions. */}

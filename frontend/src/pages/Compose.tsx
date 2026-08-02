@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import { motion } from 'motion/react'
 
 import { Dropzone } from '@/components/Dropzone'
@@ -25,7 +26,8 @@ function Eyebrow({ n, children }: { n: string; children: React.ReactNode }) {
   )
 }
 
-export function Compose({ onCreated }: { onCreated: (id: string) => void }) {
+export function Compose() {
+  const navigate = useNavigate()
   const [jd, setJd] = useState('')
   const [link, setLink] = useState('')
   const [files, setFiles] = useState<File[]>([])
@@ -38,6 +40,8 @@ export function Compose({ onCreated }: { onCreated: (id: string) => void }) {
   useEffect(() => {
     if (selectedIds === null && resumes.length > 0) {
       const def = resumes.find((r) => r.is_default) ?? resumes[0]
+      // one-shot seed of the selection from the loaded library
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedIds([def.id])
     }
   }, [resumes, selectedIds])
@@ -55,8 +59,11 @@ export function Compose({ onCreated }: { onCreated: (id: string) => void }) {
 
   function submit() {
     if (!canSubmit) return
-    const payload = files.length > 0 ? { jd, files } : { jd, resumeIds: selected }
-    create.mutate(payload, { onSuccess: (r) => onCreated(r.job_id) })
+    // T16: carry the adapter's apply URL (only set when the JD came from a link)
+    // so the Result page can offer one-click "Apply with this résumé".
+    const applyUrl = jdFetch.data?.apply_url ?? null
+    const payload = files.length > 0 ? { jd, files, applyUrl } : { jd, resumeIds: selected, applyUrl }
+    create.mutate(payload, { onSuccess: (r) => navigate(`/tailor/${r.job_id}`) })
   }
 
   function fetchLink() {
@@ -171,6 +178,16 @@ export function Compose({ onCreated }: { onCreated: (id: string) => void }) {
               from your library — or upload a fresh one below (an upload takes precedence).
             </p>
           </div>
+        )}
+
+        {resumes.length === 0 && (
+          <p className="font-mono text-[11px] leading-relaxed text-cream-soft">
+            No saved résumés yet — drop one below for this run, or{' '}
+            <Link to="/library" className="text-marigold underline-offset-2 hover:underline">
+              add it to your library
+            </Link>{' '}
+            to reuse it on every run.
+          </p>
         )}
 
         <Dropzone files={files} onChange={setFiles} />

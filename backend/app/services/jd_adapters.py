@@ -43,6 +43,7 @@ class Workday:
             title=info.get("title"),
             location=info.get("location"),
             source_url=url,
+            apply_url=url,  # Workday's posting URL is itself the apply page
             adapter=self.name,
         )
 
@@ -67,6 +68,7 @@ class Greenhouse:
             location=(data.get("location") or {}).get("name"),
             company=data.get("company_name"),
             source_url=url,
+            apply_url=data.get("absolute_url"),
             adapter=self.name,
         )
 
@@ -87,6 +89,7 @@ class Lever:
             title=data.get("text"),
             location=(data.get("categories") or {}).get("location"),
             source_url=url,
+            apply_url=data.get("hostedUrl"),
             adapter=self.name,
         )
 
@@ -120,6 +123,7 @@ class Ashby:
             title=job.get("title"),
             location=job.get("location"),
             source_url=url,
+            apply_url=job.get("applyUrl") or job.get("jobUrl"),
             adapter=self.name,
         )
 

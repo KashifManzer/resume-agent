@@ -46,6 +46,13 @@ export interface Profile {
   phone: string | null
   location: string | null
   work_auth: string | null
+  // T17 — assisted screening self-ID (all voluntary; "yes"/"no"/"decline" for the pickers)
+  work_eligible: string | null
+  needs_sponsorship: string | null
+  gender: string | null
+  race: string | null
+  disability: string | null
+  veteran: string | null
   links: Links
 }
 
@@ -66,11 +73,39 @@ export interface JdSource {
   location: string | null
   company: string | null
   source_url: string
+  apply_url: string | null // T16: the ATS apply form (null for pasted/generic JDs)
   adapter: string
   warnings: string[]
 }
 
+// Answer bank (T13). Seeded canonical-core rows carry `canonical` (question
+// null); custom rows carry `question` (canonical null).
+export type AnswerMode = 'verbatim' | 'adaptable'
+
+export interface Answer {
+  id: string
+  canonical: string | null
+  question: string | null
+  answer: string
+  mode: string
+}
+
+export interface AnswerIn {
+  question?: string | null
+  answer: string
+  mode: AnswerMode
+}
+
 export type JobStatus = 'queued' | 'running' | 'done' | 'error'
+
+// Lightweight run row for the History list (GET /jobs) — no result payload.
+export interface JobSummary {
+  id: string
+  title: string
+  status: JobStatus
+  created_at: string
+  has_pdf: boolean
+}
 
 export interface Job {
   id: string
@@ -79,6 +114,7 @@ export interface Job {
   result: PipelineResult | null
   error: string | null
   round: number
+  apply_url: string | null // T16: the ATS apply form, when the JD came from a link
 }
 
 export const OUTER_LOOP_MAX = 5

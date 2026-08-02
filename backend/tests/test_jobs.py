@@ -64,3 +64,24 @@ def test_get_missing_raises(monkeypatch):
     store = _store(monkeypatch)
     with pytest.raises(jobs.JobNotFound):
         store.get("does-not-exist")
+
+
+def test_list_returns_summaries_newest_first(monkeypatch):
+    store = _store(monkeypatch)
+    j1 = store.create("Senior Backend Engineer\nAcme Corp", [ResumeInput(id="r", tex="T")])
+    j2 = store.create("  \nFrontend Role at Gizmo", [])  # leading blank line
+    summaries = store.list()
+    assert [s.id for s in summaries] == [j2.id, j1.id]  # newest first
+    assert summaries[1].title == "Senior Backend Engineer"  # first non-empty JD line
+    assert summaries[0].title == "Frontend Role at Gizmo"
+    assert summaries[1].status == "queued"
+
+
+def test_list_summary_has_pdf_flag_and_title_fallback(monkeypatch):
+    store = _store(monkeypatch)
+    job = store.create("", [ResumeInput(id="r", tex="T")])  # empty JD → fallback title
+    assert store.list()[0].has_pdf is False
+    store.run(job.id)  # produces a result with a pdf_path
+    s = store.list()[0]
+    assert s.has_pdf is True
+    assert s.title == "Untitled run"

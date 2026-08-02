@@ -1,15 +1,9 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 
-import { Dropzone } from '@/components/Dropzone'
+import { PageHeading } from '@/components/PageHeading'
 import { Button } from '@/components/ui/button'
-import {
-  useDeleteResume,
-  useProfile,
-  useResumes,
-  useSetDefaultResume,
-  useUpdateProfile,
-  useUploadResume,
-} from '@/hooks/useProfile'
+import { useProfile, useUpdateProfile } from '@/hooks/useProfile'
 import type { ProfileIn } from '@/lib/types'
 
 const EMPTY: ProfileIn = {
@@ -18,6 +12,12 @@ const EMPTY: ProfileIn = {
   phone: '',
   location: '',
   work_auth: '',
+  work_eligible: '',
+  needs_sponsorship: '',
+  gender: '',
+  race: '',
+  disability: '',
+  veteran: '',
   links: { github: '', linkedin: '', portfolio: '' },
 }
 
@@ -33,26 +33,66 @@ function Field({ label, ...props }: { label: string } & React.InputHTMLAttribute
   )
 }
 
-export function Profile({ onBack }: { onBack: () => void }) {
-  const { data: profile } = useProfile()
-  const { data: resumes = [] } = useResumes()
-  const save = useUpdateProfile()
-  const upload = useUploadResume()
-  const del = useDeleteResume()
-  const setDefault = useSetDefaultResume()
+function Picker({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  options: [string, string][] // [value, display]
+}) {
+  return (
+    <label className="block space-y-1.5">
+      <span className="font-mono text-[10px] tracking-[0.22em] text-cream-soft uppercase">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`${inputCls} appearance-none`}
+      >
+        <option value="">— not set —</option>
+        {options.map(([v, d]) => (
+          <option key={v} value={v}>
+            {d}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
 
+const YES_NO: [string, string][] = [
+  ['yes', 'Yes'],
+  ['no', 'No'],
+]
+const YES_NO_DECLINE: [string, string][] = [...YES_NO, ['decline', 'Decline to self-identify']]
+
+// Identity + links (T14 — the résumé library and answer bank are now their own
+// sections). Set up once; every tailored run and the extension read from here.
+export function Profile() {
+  const { data: profile } = useProfile()
+  const save = useUpdateProfile()
   const [form, setForm] = useState<ProfileIn>(EMPTY)
-  const [staged, setStaged] = useState<File[]>([]) // files queued for upload
 
   // hydrate the form once the profile loads (null fields → empty strings)
   useEffect(() => {
-    if (profile)
-      setForm({
+    if (!profile) return
+    // one-shot hydrate from the server fetch — the legitimate setState-in-effect case
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setForm({
         name: profile.name ?? '',
         email: profile.email ?? '',
         phone: profile.phone ?? '',
         location: profile.location ?? '',
         work_auth: profile.work_auth ?? '',
+        work_eligible: profile.work_eligible ?? '',
+        needs_sponsorship: profile.needs_sponsorship ?? '',
+        gender: profile.gender ?? '',
+        race: profile.race ?? '',
+        disability: profile.disability ?? '',
+        veteran: profile.veteran ?? '',
         links: {
           github: profile.links?.github ?? '',
           linkedin: profile.links?.linkedin ?? '',
@@ -63,36 +103,22 @@ export function Profile({ onBack }: { onBack: () => void }) {
 
   const set = (k: keyof ProfileIn) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }))
+  const setVal = (k: keyof ProfileIn) => (v: string) => setForm((f) => ({ ...f, [k]: v }))
   const setLink = (k: keyof ProfileIn['links']) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm((f) => ({ ...f, links: { ...f.links, [k]: e.target.value } }))
 
-  async function addResumes() {
-    if (!staged.length) return
-    for (const file of staged) await upload.mutateAsync({ file })
-    setStaged([])
-  }
-
   return (
-    <div className="mx-auto max-w-4xl space-y-12 px-6 py-16 lg:py-20">
-      <header className="space-y-3">
-        <button
-          onClick={onBack}
-          className="font-mono text-[11px] tracking-[0.22em] text-cream-soft uppercase hover:text-marigold"
-        >
-          ← back to the desk
-        </button>
-        <h1 className="font-serif text-5xl font-medium tracking-[-0.02em] text-cream sm:text-6xl">
-          Your profile<span className="text-marigold">.</span>
-        </h1>
-        <p className="max-w-xl text-cream-soft">
-          Set up once. Identity &amp; links live here; your résumé library saves you the re-upload on
-          every run.
-        </p>
-      </header>
+    <div className="mx-auto max-w-4xl space-y-10 px-6 py-16 lg:py-20">
+      <PageHeading kicker="set up & track · profile" title={<>Your details<span className="text-marigold">.</span></>}>
+        Identity &amp; links live here — reused on every tailored run and by the autofill extension.
+        Your résumés live in the{' '}
+        <Link to="/library" className="text-marigold underline-offset-2 hover:underline">
+          library
+        </Link>
+        .
+      </PageHeading>
 
-      {/* identity */}
       <section className="space-y-5">
-        <p className="font-mono text-[11px] tracking-[0.22em] text-marigold uppercase">01 · identity</p>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="name" value={form.name ?? ''} onChange={set('name')} placeholder="Ada Lovelace" />
           <Field label="email" value={form.email ?? ''} onChange={set('email')} placeholder="ada@example.com" />
@@ -105,6 +131,37 @@ export function Profile({ onBack }: { onBack: () => void }) {
           <Field label="linkedin" value={form.links.linkedin ?? ''} onChange={setLink('linkedin')} placeholder="linkedin.com/in/…" />
           <Field label="portfolio" value={form.links.portfolio ?? ''} onChange={setLink('portfolio')} placeholder="yoursite.com" />
         </div>
+
+        {/* T17 — work eligibility: lets the extension answer those Yes/No radios */}
+        <div className="border-t border-desk-line pt-6">
+          <p className="mb-3 font-mono text-[11px] tracking-[0.22em] text-marigold uppercase">
+            work eligibility
+          </p>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Picker label="legally eligible to work?" value={form.work_eligible ?? ''} onChange={setVal('work_eligible')} options={YES_NO} />
+            <Picker label="need visa sponsorship?" value={form.needs_sponsorship ?? ''} onChange={setVal('needs_sponsorship')} options={YES_NO} />
+          </div>
+        </div>
+
+        {/* T17 — voluntary EEO self-ID. Fills demographic questions from YOUR values;
+            disability/veteran default to "No" (your choice) but are always flagged for review. */}
+        <div className="border-t border-desk-line pt-6">
+          <p className="font-mono text-[11px] tracking-[0.22em] text-marigold uppercase">
+            voluntary self-identification
+          </p>
+          <p className="mt-1.5 mb-3 max-w-xl text-[13px] leading-relaxed text-cream-soft">
+            All optional and voluntary. The extension fills these from your values and{' '}
+            <span className="text-cream">always flags them for your review</span> before you submit —
+            it never submits for you.
+          </p>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="gender" value={form.gender ?? ''} onChange={set('gender')} placeholder="e.g. Male / Female / Non-binary" />
+            <Field label="race / ethnicity" value={form.race ?? ''} onChange={set('race')} placeholder="e.g. Asian / Two or more races" />
+            <Picker label="disability status" value={form.disability ?? ''} onChange={setVal('disability')} options={YES_NO_DECLINE} />
+            <Picker label="veteran status" value={form.veteran ?? ''} onChange={setVal('veteran')} options={YES_NO_DECLINE} />
+          </div>
+        </div>
+
         <div className="flex items-center gap-4">
           <Button
             onClick={() => save.mutate(form)}
@@ -115,79 +172,6 @@ export function Profile({ onBack }: { onBack: () => void }) {
           </Button>
           {save.isSuccess && !save.isPending && (
             <span className="font-mono text-xs text-cream-soft">saved ✓</span>
-          )}
-        </div>
-      </section>
-
-      {/* résumé library */}
-      <section className="space-y-5">
-        <p className="font-mono text-[11px] tracking-[0.22em] text-marigold uppercase">
-          02 · résumé library
-        </p>
-
-        {resumes.length > 0 ? (
-          <ul className="sheet-sm divide-y divide-border overflow-hidden">
-            {resumes.map((r) => (
-              <li key={r.id} className="flex items-center justify-between gap-3 px-4 py-3">
-                <span className="flex min-w-0 items-center gap-3">
-                  <span aria-hidden className="text-accent">§</span>
-                  <span className="truncate font-mono text-sm text-ink">{r.label || r.filename}</span>
-                  {r.is_default && (
-                    <span className="shrink-0 rounded bg-marigold/20 px-2 py-0.5 font-mono text-[10px] tracking-[0.15em] text-marigold uppercase">
-                      default
-                    </span>
-                  )}
-                </span>
-                <span className="flex shrink-0 items-center gap-1">
-                  {!r.is_default && (
-                    <button
-                      onClick={() => setDefault.mutate(r.id)}
-                      className="rounded px-2 py-1 font-mono text-xs text-ink-soft hover:text-accent"
-                    >
-                      make default
-                    </button>
-                  )}
-                  <button
-                    onClick={() => del.mutate(r.id)}
-                    aria-label={`Delete ${r.label || r.filename}`}
-                    className="rounded px-2 py-1 font-mono text-xs text-ink-soft hover:text-gap"
-                  >
-                    remove
-                  </button>
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="font-mono text-sm text-cream-soft">No résumés yet — add a .tex below.</p>
-        )}
-
-        {/* stage one or more .tex, then add them all to the library */}
-        <Dropzone
-          files={staged}
-          onChange={setStaged}
-          title="Add résumés to your library"
-          hint={
-            <>
-              Drop one or more <code className="font-mono text-accent">.tex</code> files — reuse them
-              on any run, no re-upload.
-            </>
-          }
-        />
-        <div className="flex items-center gap-4">
-          <Button
-            onClick={addResumes}
-            disabled={!staged.length || upload.isPending}
-            className="h-11 rounded-md bg-cream-soft/10 px-5 font-mono text-xs tracking-[0.15em] text-cream uppercase transition hover:bg-cream-soft/20 disabled:opacity-40"
-          >
-            {upload.isPending
-              ? 'adding…'
-              : `Add ${staged.length ? `${staged.length} ` : ''}to library`}
-          </Button>
-          {upload.isError && (
-            <p role="alert" className="font-mono text-xs text-gap-hi">
-              {(upload.error as Error).message}
-            </p>
           )}
         </div>
       </section>

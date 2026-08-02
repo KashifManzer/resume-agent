@@ -83,7 +83,14 @@ def fetch_jd_from_url(url: str) -> JdSource:
     url = url.strip()
     for adapter in jd_adapters.ADAPTERS:
         if adapter.match(url):
-            return adapter.parse(json.loads(_guarded_get(adapter.api_url(url))), url)
+            try:
+                return adapter.parse(json.loads(_guarded_get(adapter.api_url(url))), url)
+            except (JdFetchError, ValueError):
+                # The public API can 404 even when the posting is live — e.g. an
+                # UNLISTED/confidential posting (reachable by direct link, absent
+                # from the API), an API disabled for that org, or an outage. The
+                # posting PAGE still carries the JD, so fall back to scraping it.
+                break
     return _generic(url)
 
 

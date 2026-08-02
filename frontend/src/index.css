@@ -158,6 +158,18 @@
     box-shadow: var(--sheet-shadow-sm);
   }
 
+  /* Onboarding step CTA — a mono action link on a cream sheet (dark marigold). */
+  .ob-cta {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    color: var(--accent-ink);
+    text-underline-offset: 3px;
+  }
+  .ob-cta:hover {
+    text-decoration: underline;
+  }
+
   /* Signature: highlighter marks over keyword coverage. The ink text is always
      visible; the highlight sweeps in under it (robust — no invisible content). */
   .mark-hl {
@@ -176,6 +188,73 @@
     text-decoration: underline wavy var(--gap);
     text-underline-offset: 3px;
     text-decoration-thickness: 1.5px;
+  }
+
+  /* The spine / index-tab nav (T14): sections read as lettered dividers in a
+     card index. The active tab is "pulled forward" — a cream paper face with a
+     marigold ink-mark on its top edge, like the folder you reached for. */
+  .tab-rail {
+    scrollbar-width: none;
+  }
+  .tab-rail::-webkit-scrollbar {
+    display: none;
+  }
+  .idx-tab {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    flex-shrink: 0;
+    padding: 0.42rem 0.9rem 0.5rem;
+    border: 1px solid transparent;
+    border-bottom: 0;
+    border-top-left-radius: var(--radius-md);
+    border-top-right-radius: var(--radius-md);
+    color: var(--cream-soft);
+    transition:
+      color 0.18s ease,
+      background-color 0.18s ease;
+  }
+  .idx-tab:hover {
+    color: var(--cream);
+    background: rgba(239, 228, 201, 0.05);
+  }
+  .idx-tab:focus-visible {
+    outline: 2px solid var(--marigold);
+    outline-offset: 2px;
+  }
+  .idx-tab[aria-current='page'] {
+    color: var(--ink);
+    background-color: var(--paper-2);
+    background-image: var(--paper-tooth);
+    border-color: var(--paper-line);
+    box-shadow: var(--sheet-shadow-sm);
+  }
+  .idx-tab[aria-current='page']::before {
+    content: '';
+    position: absolute;
+    inset: -1px 0 auto 0;
+    height: 3px;
+    background: var(--marigold);
+    border-top-left-radius: var(--radius-md);
+    border-top-right-radius: var(--radius-md);
+  }
+  .idx-tab .idx-kicker {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.28em;
+    color: var(--marigold);
+    opacity: 0.75;
+  }
+  .idx-tab[aria-current='page'] .idx-kicker {
+    color: var(--accent-ink);
+    opacity: 1;
+  }
+  .idx-tab .idx-label {
+    font-family: var(--font-serif);
+    font-size: 0.98rem;
+    line-height: 1.1;
+    letter-spacing: -0.01em;
   }
 
   /* "Proof approved" — a rubber-ink stamp pressed on a paper slip, the Result

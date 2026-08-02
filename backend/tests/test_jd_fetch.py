@@ -106,6 +106,34 @@ def test_ashby_parse_missing_jid_raises():
         a.parse(json.loads(_fixture("ashby.json")), "https://jobs.ashbyhq.com/acme/zzz-999")
 
 
+# --- apply_url extraction (T16): the adapter's apply form, not source_url ----
+
+
+def test_adapters_expose_apply_url():
+    gh = A.by_name("greenhouse").parse(
+        json.loads(_fixture("greenhouse.json")), "https://job-boards.greenhouse.io/acme/jobs/456"
+    )
+    assert gh.apply_url == "https://job-boards.greenhouse.io/acme/jobs/456"  # absolute_url
+
+    lv = A.by_name("lever").parse(json.loads(_fixture("lever.json")), "https://jobs.lever.co/acme/789")
+    assert lv.apply_url == "https://jobs.lever.co/acme/789"  # hostedUrl
+
+    ash = A.by_name("ashby").parse(
+        json.loads(_fixture("ashby.json")), "https://jobs.ashbyhq.com/acme/aaa-111"
+    )
+    assert ash.apply_url == "https://jobs.ashbyhq.com/acme/aaa-111/application"  # applyUrl, not the listing
+
+    wd = A.by_name("workday").parse(json.loads(_fixture("workday.json")), "https://acme.wd5.myworkdayjobs.com/x")
+    assert wd.apply_url == "https://acme.wd5.myworkdayjobs.com/x"  # the posting URL is the apply page
+
+
+def test_generic_path_has_no_apply_url(monkeypatch):
+    monkeypatch.setattr(jd_fetch, "_guarded_get", lambda url, **kw: _fixture("generic_job.html").encode())
+    monkeypatch.setattr(jd_fetch.config, "OLLAMA_API_KEY", None)
+    src = jd_fetch.fetch_jd_from_url("https://careers.example.com/platform-engineer")
+    assert src.apply_url is None  # paste/generic → no one-click apply
+
+
 # --- SSRF guard ------------------------------------------------------------
 
 
@@ -191,6 +219,21 @@ def test_dispatch_unknown_host_falls_to_generic(monkeypatch):
     monkeypatch.setattr(jd_fetch.config, "OLLAMA_API_KEY", None)
     src = jd_fetch.fetch_jd_from_url("https://some-random-company.com/careers/1")
     assert src.adapter == "generic"
+
+
+def test_adapter_api_404_falls_back_to_generic(monkeypatch):
+    # An unlisted/confidential Lever posting: live on jobs.lever.co, but the
+    # public API 404s. We must scrape the posting page, not surface the 404.
+    def fake_get(url, **kw):
+        if "api.lever.co" in url:
+            raise jd_fetch.JdFetchError("fetch failed: HTTP 404")
+        return _fixture("generic_job.html").encode()  # the posting page
+
+    monkeypatch.setattr(jd_fetch, "_guarded_get", fake_get)
+    monkeypatch.setattr(jd_fetch.config, "OLLAMA_API_KEY", None)
+    src = jd_fetch.fetch_jd_from_url("https://jobs.lever.co/acme/unlisted-123")
+    assert src.adapter == "generic"  # fell back instead of raising
+    assert "Kubernetes" in src.text
 
 
 # --- /jd/from-url route ----------------------------------------------------

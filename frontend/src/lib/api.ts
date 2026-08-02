@@ -1,9 +1,27 @@
-import type { Job, JdSource, Profile, ProfileIn, ResumeMeta } from './types'
+import type {
+  Answer,
+  AnswerIn,
+  Job,
+  JobSummary,
+  JdSource,
+  Profile,
+  ProfileIn,
+  ResumeMeta,
+} from './types'
+
+/** Error carrying the HTTP status, so callers can branch (e.g. don't retry a 404). */
+export class ApiError extends Error {
+  status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
 
 async function ok(res: Response): Promise<Response> {
   if (!res.ok) {
     const detail = await res.json().catch(() => null)
-    throw new Error(detail?.detail ?? `${res.status} ${res.statusText}`)
+    throw new ApiError(detail?.detail ?? `${res.status} ${res.statusText}`, res.status)
   }
   return res
 }
@@ -11,12 +29,13 @@ async function ok(res: Response): Promise<Response> {
 /** Run a job from ad-hoc uploads OR library résumé ids (mirrors JD paste-or-link). */
 export async function createJob(
   jd: string,
-  opts: { files?: File[]; resumeIds?: string[] },
+  opts: { files?: File[]; resumeIds?: string[]; applyUrl?: string | null },
 ): Promise<{ job_id: string }> {
   const form = new FormData()
   form.append('jd', jd)
   for (const f of opts.files ?? []) form.append('files', f, f.name)
   for (const id of opts.resumeIds ?? []) form.append('resume_ids', id)
+  if (opts.applyUrl) form.append('apply_url', opts.applyUrl) // T16: link JDs only
   const res = await ok(await fetch('/jobs', { method: 'POST', body: form }))
   return res.json()
 }
@@ -57,6 +76,30 @@ export async function setDefaultResume(id: string): Promise<ResumeMeta> {
   return (await ok(await fetch(`/resumes/${id}/default`, { method: 'PUT' }))).json()
 }
 
+// --- answer bank (T13) ------------------------------------------------------
+
+export async function listAnswers(): Promise<Answer[]> {
+  return (await ok(await fetch('/answers'))).json()
+}
+
+async function writeAnswer(path: string, method: 'POST' | 'PUT', body: AnswerIn): Promise<Answer> {
+  const res = await ok(
+    await fetch(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  )
+  return res.json()
+}
+
+export const createAnswer = (body: AnswerIn) => writeAnswer('/answers', 'POST', body)
+export const updateAnswer = (id: string, body: AnswerIn) => writeAnswer(`/answers/${id}`, 'PUT', body)
+
+export async function deleteAnswer(id: string): Promise<void> {
+  await ok(await fetch(`/answers/${id}`, { method: 'DELETE' }))
+}
+
 /** Fetch a JD from a job-posting link; the caller drops `text` into the JD field. */
 export async function fetchJdFromUrl(url: string): Promise<JdSource> {
   const res = await ok(
@@ -71,6 +114,11 @@ export async function fetchJdFromUrl(url: string): Promise<JdSource> {
 
 export async function getJob(id: string): Promise<Job> {
   return (await ok(await fetch(`/jobs/${id}`))).json()
+}
+
+/** Past runs, newest first (T14 History) — same endpoint the extension picker uses. */
+export async function listJobs(): Promise<JobSummary[]> {
+  return (await ok(await fetch('/jobs'))).json()
 }
 
 export async function sendFeedback(id: string, feedback: string): Promise<{ round: number }> {

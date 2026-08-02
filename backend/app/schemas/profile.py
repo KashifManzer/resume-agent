@@ -15,7 +15,21 @@ class ProfileIn(BaseModel):
     phone: str | None = None
     location: str | None = None
     work_auth: str | None = None
+    # T17 — assisted screening self-ID (all voluntary/optional)
+    work_eligible: str | None = None
+    needs_sponsorship: str | None = None
+    gender: str | None = None
+    race: str | None = None
+    disability: str | None = None
+    veteran: str | None = None
     links: Links = Links()
+
+
+# scalar (non-links) profile columns, shared by the get/put mapping below
+PROFILE_SCALARS = (
+    "name", "email", "phone", "location", "work_auth",
+    "work_eligible", "needs_sponsorship", "gender", "race", "disability", "veteran",
+)
 
 
 class ProfileOut(ProfileIn):

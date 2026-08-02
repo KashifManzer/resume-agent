@@ -1,9 +1,10 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import init_db
-from app.routers import jd, jobs, profile
+from app.routers import answers, autofill, jd, jobs, profile
 
 
 @asynccontextmanager
@@ -13,9 +14,19 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Resume Agent", lifespan=lifespan)
+# The autofill extension (T12) and the Vite dev frontend call us cross-origin.
+# Scope to chrome-extension:// (any unpacked id) + localhost — not "*".
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^(chrome-extension://[a-p]+|http://localhost:\d+)$",
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(jobs.router)
 app.include_router(jd.router)
 app.include_router(profile.router)
+app.include_router(autofill.router)
+app.include_router(answers.router)
 
 
 @app.get("/health")

@@ -10,5 +10,9 @@ class JdSource(BaseModel):
     location: str | None = None
     company: str | None = None
     source_url: str
+    # The ATS *apply form* URL (T16) — Ashby `applyUrl` / Greenhouse `absolute_url`
+    # / Lever `hostedUrl` / Workday = the posting URL. NOT source_url (a listing
+    # page). None for the generic path. Threaded → job → the Result "Apply" button.
+    apply_url: str | None = None
     adapter: str  # "workday" | "greenhouse" | "lever" | "ashby" | "generic"
     warnings: list[str] = []

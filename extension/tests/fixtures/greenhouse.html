@@ -1,0 +1,45 @@
+<!-- Representative Greenhouse (job-boards.greenhouse.io) application form.
+     Hand-authored from the known DOM shape; replace with a real capture if the
+     manual Chrome verify surfaces a field the detector misses. -->
+<main>
+  <h1>Apply for this job</h1>
+  <form id="application-form">
+    <div class="field">
+      <label for="first_name">First Name <span class="req">*</span></label>
+      <input type="text" id="first_name" name="first_name" autocomplete="given-name" required />
+    </div>
+    <div class="field">
+      <label for="last_name">Last Name *</label>
+      <input type="text" id="last_name" name="last_name" autocomplete="family-name" required />
+    </div>
+    <div class="field">
+      <label for="email">Email *</label>
+      <input type="email" id="email" name="email" autocomplete="email" required />
+    </div>
+    <div class="field">
+      <label for="phone">Phone</label>
+      <input type="tel" id="phone" name="phone" autocomplete="tel" />
+    </div>
+    <div class="field">
+      <label for="resume">Resume/CV *</label>
+      <input type="file" id="resume" name="resume" required />
+    </div>
+    <div class="field">
+      <label for="cover_letter">Cover Letter</label>
+      <input type="file" id="cover_letter" name="cover_letter" />
+    </div>
+    <div class="field">
+      <label for="q_linkedin">LinkedIn Profile</label>
+      <input type="text" id="q_linkedin" name="job_application[answers_attributes][0][text_value]" />
+    </div>
+    <div class="field">
+      <label for="q_experience">How many total years of experience do you have?</label>
+      <input type="text" id="q_experience" name="job_application[answers_attributes][1][text_value]" />
+    </div>
+    <div class="field">
+      <label for="q_why">Why do you want to work here?</label>
+      <textarea id="q_why" name="job_application[answers_attributes][2][text_value]"></textarea>
+    </div>
+    <button type="submit">Submit Application</button>
+  </form>
+</main>

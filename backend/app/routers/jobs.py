@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from app import db
 from app.models import Resume
 from app.routers.profile import PID
-from app.schemas.job import Job
+from app.schemas.job import Job, JobSummary
 from app.schemas.selector import ResumeInput
 from app.services import jobs, storage
 
@@ -39,6 +39,7 @@ async def create_job(
     jd: str = Form(...),
     resume_ids: list[str] = Form(default=[]),
     files: list[UploadFile] = File(default=[]),
+    apply_url: str | None = Form(default=None),  # T16: adapter's apply URL (link JDs only)
 ) -> dict[str, str]:
     # ad-hoc upload (as today) OR pick from the library — mirrors JD paste-or-link
     if files:
@@ -50,9 +51,15 @@ async def create_job(
         resumes = _resumes_from_library(resume_ids)
     else:
         raise HTTPException(status_code=400, detail="provide resume_ids or files")
-    job = jobs.store.create(jd, resumes)
+    job = jobs.store.create(jd, resumes, apply_url=apply_url or None)
     background.add_task(jobs.store.run, job.id)
     return {"job_id": job.id}
+
+
+@router.get("/jobs")
+def list_jobs() -> list[JobSummary]:
+    """Recent tailored runs for the extension's picker (T12)."""
+    return jobs.store.list()
 
 
 @router.get("/jobs/{job_id}")
