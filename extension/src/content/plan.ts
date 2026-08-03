@@ -29,7 +29,8 @@ function valueFor(c: Canonical, p: Profile): string | null {
     case 'website':
       return p.links?.portfolio || null
     default:
-      return null // years_experience, cover_letter, free_text, unknown, resume_upload
+      // address (granular subfield), years_experience, cover_letter, free_text, unknown, resume_upload
+      return null // → left BLANK; we never fill a value we don't hold
   }
 }
 

@@ -33,7 +33,10 @@ const LABEL_RULES: { canonical: Canonical; re: RegExp }[] = [
     re: /(years?[\s_-]*of[\s_-]*experience|years?[\s_-]*experience|experience.*years|total experience)/,
   },
   { canonical: 'cover_letter', re: /cover[\s_-]*letter/ },
-  { canonical: 'location', re: /\b(city|location|address|where.*located|current location|based in)\b/ },
+  { canonical: 'location', re: /\b(city|location|where.*located|current location|based in)\b/ },
+  // T19: granular address subfields — detected but NEVER filled (profile has only a coarse location),
+  // so a "Postal Code"/"Address Line"/"State"/"Country" field can't inherit the city value.
+  { canonical: 'address', re: /\b(street|address|postal|post\s*code|zip|state|province|county|country)\b/ },
   { canonical: 'full_name', re: /\b(full[\s_-]*name|your[\s_-]*name|legal[\s_-]*name|applicant[\s_-]*name|candidate[\s_-]*name)\b/ },
 ]
 

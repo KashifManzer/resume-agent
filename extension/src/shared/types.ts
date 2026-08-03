@@ -7,6 +7,7 @@ export type Canonical =
   | 'email'
   | 'phone'
   | 'location'
+  | 'address' // T19: granular address subfield (street/postal/state/country) — detected but NEVER filled (profile has only a coarse location)
   | 'linkedin'
   | 'github'
   | 'portfolio'

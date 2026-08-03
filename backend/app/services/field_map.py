@@ -41,7 +41,10 @@ _RULES = [
     ("work_authorization", re.compile(r"(work[\s_-]*authoriz|authoriz(ed|ation)\s*to\s*work|right\s*to\s*work|sponsor|visa|work permit|legally.*work)")),
     ("years_experience", re.compile(r"(years?[\s_-]*of[\s_-]*experience|years?[\s_-]*experience|experience.*years|total experience)")),
     ("cover_letter", re.compile(r"cover[\s_-]*letter")),
-    ("location", re.compile(r"\b(city|location|address|where.*located|current location|based in)\b")),
+    ("location", re.compile(r"\b(city|location|where.*located|current location|based in)\b")),
+    # T19: granular address subfields — detected but NEVER filled (profile has only a coarse location),
+    # so a "Postal Code"/"Address Line"/"State"/"Country" field can't inherit the city value.
+    ("address", re.compile(r"\b(street|address|postal|post\s*code|zip|state|province|county|country)\b")),
     ("full_name", re.compile(r"\b(full[\s_-]*name|your[\s_-]*name|legal[\s_-]*name|applicant[\s_-]*name|candidate[\s_-]*name)\b")),
 ]
 
@@ -141,7 +144,9 @@ def _llm_map(unresolved: list[FieldDescriptor]) -> dict[int, str]:
             "content": (
                 "You classify job-application form fields into a fixed vocabulary of canonical keys. "
                 "You only say what a field ASKS FOR — you never invent an answer. Use 'free_text' for "
-                "open-ended questions and 'unknown' when unsure. Reply with JSON only."
+                "open-ended questions and 'unknown' when unsure. Use 'address' for a street / postal / "
+                "ZIP / state / province / country address part — NOT 'location' (which is only a general "
+                "city). Reply with JSON only."
             ),
         },
         {

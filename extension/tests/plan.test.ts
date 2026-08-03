@@ -59,6 +59,16 @@ describe('planFill (fill decisions — the trust boundary)', () => {
     ])
   })
 
+  test('address subfields are left BLANK, never the coarse location (T19 "Long Beach in postal code" fix)', () => {
+    const p = plan(
+      [d(0, { label: 'Postal Code' }), d(1, { label: 'City' })],
+      [mp(0, 'address'), mp(1, 'location')],
+    )
+    expect(p[0].action).toBe('blank') // postal code: no wrong value inherited from location
+    expect(p[0].value).toBeUndefined()
+    expect(p[1]).toMatchObject({ action: 'fill', value: 'London, UK' }) // a genuine city still fills
+  })
+
   test('a mapped field with no profile value is left BLANK, never guessed', () => {
     const p = plan([d(0, { label: 'Years of experience' })], [mp(0, 'years_experience')])
     expect(p[0].action).toBe('blank')

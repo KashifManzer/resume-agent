@@ -329,5 +329,30 @@
       "type": "file",
       "label": "Upload your curriculum vitae"
     }
+  },
+  {
+    "note": "postal code -> address (not location)",
+    "expected": "address",
+    "descriptor": { "field_ref": 33, "tag": "input", "type": "text", "label": "Postal Code" }
+  },
+  {
+    "note": "address line 1 -> address (not location)",
+    "expected": "address",
+    "descriptor": { "field_ref": 34, "tag": "input", "type": "text", "label": "Address Line 1" }
+  },
+  {
+    "note": "state -> address",
+    "expected": "address",
+    "descriptor": { "field_ref": 35, "tag": "input", "type": "text", "label": "State" }
+  },
+  {
+    "note": "country -> address",
+    "expected": "address",
+    "descriptor": { "field_ref": 36, "tag": "input", "type": "text", "label": "Country" }
+  },
+  {
+    "note": "city still -> location (coarse location, kept)",
+    "expected": "location",
+    "descriptor": { "field_ref": 37, "tag": "input", "type": "text", "label": "City" }
   }
 ]

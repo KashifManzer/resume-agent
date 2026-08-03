@@ -11,6 +11,7 @@ CANONICAL = frozenset(
         "email",
         "phone",
         "location",
+        "address",
         "linkedin",
         "github",
         "portfolio",
