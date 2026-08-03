@@ -86,13 +86,13 @@ def test_inner_loop_keeps_best_stops_on_plateau_gate_once(monkeypatch):
 
 def test_inner_loop_capped_at_max(monkeypatch):
     # every round improves → would run forever, but caps at INNER_LOOP_MAX
-    calls = _mock(monkeypatch, [10, 20, 30, 40, 50, 60])
+    _mock(monkeypatch, [10, 20, 30, 40, 50, 60])
     r = pipeline.run_pipeline("jd", RESUMES)
     assert len(r.report.changes) == pipeline.INNER_LOOP_MAX
 
 
 def test_below_gate_adds_github_note(monkeypatch):
-    calls = _mock(
+    _mock(
         monkeypatch, [70, 70],
         hiring=HiringAgentReport(overall=50, categories={"production": 25}, advice=["add OSS"]),
     )

@@ -3,14 +3,7 @@ import { describe, expect, test } from 'vitest'
 import { detectFields } from '../src/content/detector'
 import { mapAll, mapDescriptor } from '../src/content/mapper'
 import type { Canonical, Descriptor } from '../src/shared/types'
-import { loadFixture } from './util'
-
-function bare(over: Partial<Descriptor>): Descriptor {
-  return {
-    field_ref: 0, tag: 'input', type: 'text', name: '', id: '', autocomplete: '',
-    aria_label: '', placeholder: '', label: '', data_automation_id: '', required: false, ...over,
-  }
-}
+import { bare, loadFixture } from './util'
 
 function canonicalBySelector(pick: (d: Descriptor) => boolean): Canonical {
   const ds = detectFields(document).map((f) => f.descriptor)

@@ -19,7 +19,8 @@ from app.services import llm
 HIGH = 0.95  # native signal (autocomplete / input type / file)
 KEYWORD = 0.85  # label/name keyword match
 
-# Mirrors extension/src/content/mapper.ts — keep the two in sync.
+# Mirrors extension/src/content/mapper.ts. The mapper-parity test feeds one
+# shared fixture set to both impls and fails if they drift (extension is canonical).
 _AUTOCOMPLETE = {
     "name": "full_name",
     "given-name": "first_name",
@@ -29,19 +30,19 @@ _AUTOCOMPLETE = {
     "tel-national": "phone",
 }
 _RULES = [
-    ("first_name", re.compile(r"\b(first[\s_-]*name|given[\s_-]*name|forename)\b")),
-    ("last_name", re.compile(r"\b(last[\s_-]*name|family[\s_-]*name|surname)\b")),
+    ("first_name", re.compile(r"\b(first[\s_-]*name|given[\s_-]*name|forename|f[\s_-]?name)\b")),
+    ("last_name", re.compile(r"\b(last[\s_-]*name|family[\s_-]*name|surname|l[\s_-]?name)\b")),
     ("email", re.compile(r"\be[\s_-]?mail\b")),
     ("phone", re.compile(r"\b(phone|mobile|cell|telephone|tel)\b")),
     ("linkedin", re.compile(r"linked[\s_-]?in")),
     ("github", re.compile(r"git[\s_-]?hub")),
     ("portfolio", re.compile(r"portfolio")),
     ("website", re.compile(r"\b(website|personal site|blog|homepage|url)\b")),
-    ("work_authorization", re.compile(r"(work[\s_-]*authoriz|authoriz(ed|ation)\s*to\s*work|right\s*to\s*work|sponsor|visa|work permit)")),
+    ("work_authorization", re.compile(r"(work[\s_-]*authoriz|authoriz(ed|ation)\s*to\s*work|right\s*to\s*work|sponsor|visa|work permit|legally.*work)")),
     ("years_experience", re.compile(r"(years?[\s_-]*of[\s_-]*experience|years?[\s_-]*experience|experience.*years|total experience)")),
     ("cover_letter", re.compile(r"cover[\s_-]*letter")),
-    ("location", re.compile(r"\b(city|location|address|current location|based in)\b")),
-    ("full_name", re.compile(r"\b(full[\s_-]*name|your[\s_-]*name|legal[\s_-]*name)\b")),
+    ("location", re.compile(r"\b(city|location|address|where.*located|current location|based in)\b")),
+    ("full_name", re.compile(r"\b(full[\s_-]*name|your[\s_-]*name|legal[\s_-]*name|applicant[\s_-]*name|candidate[\s_-]*name)\b")),
 ]
 
 # Workday keys fields off data-automation-id (camelCase/underscore compounds);
@@ -69,9 +70,10 @@ def heuristic_map(f: FieldDescriptor) -> tuple[str, float] | None:
     if typ == "file":
         if "cover" in hay:
             return "cover_letter", HIGH
-        # Anonymous file input (no id/name/keyword) is usually an "autofill from
-        # résumé" dropzone (Ashby), not the résumé field → leave for the LLM lane.
-        if re.search(r"resume|cv|résumé|file-upload", hay) or f.id or f.name or f.data_automation_id:
+        # Only a field that reads like the résumé slot gets the résumé. A generic
+        # or anonymous file input (Ashby's "autofill from résumé" dropzone, Lever's
+        # generic upload) must NOT — over-attaching there breaks the application.
+        if re.search(r"resume|résumé|\bcv\b|curriculum|file-upload", hay):
             return "resume_upload", HIGH
         return None
 

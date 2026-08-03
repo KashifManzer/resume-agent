@@ -3,6 +3,8 @@
 // two — so we group radios by `name` and resolve the question text + the option
 // labels. Pure DOM read (no chrome APIs) so it unit-tests in jsdom.
 
+import { clean, labelByFor } from './dom'
+
 export interface ChoiceOption {
   label: string
   value: string
@@ -18,17 +20,10 @@ export interface ChoiceGroup {
   container: HTMLElement // anchor for the on-page proof mark
 }
 
-function clean(s: string): string {
-  return s.replace(/[*✱]/g, ' ').replace(/\s+/g, ' ').trim()
-}
-
 /** The text label for one radio option (the "Yes"/"No" bit). */
 function optionLabel(el: HTMLInputElement): string {
-  const doc = el.ownerDocument
-  if (el.id) {
-    const l = doc.querySelector(`label[for="${el.id.replace(/["\\]/g, '\\$&')}"]`)
-    if (l?.textContent) return clean(l.textContent)
-  }
+  const forLabel = labelByFor(el)
+  if (forLabel) return forLabel
   const wrap = el.closest('label')
   if (wrap?.textContent) return clean(wrap.textContent)
   const aria = el.getAttribute('aria-label')

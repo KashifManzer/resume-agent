@@ -1,4 +1,5 @@
 import type { Descriptor } from '../shared/types'
+import { clean, labelByFor } from './dom'
 
 export interface DetectedField {
   el: HTMLElement
@@ -69,10 +70,8 @@ function isHoneypot(el: HTMLElement): boolean {
 
 /** Resolve the human label for a field, trying the reliable signals first. */
 function labelFor(el: HTMLElement): string {
-  if (el.id) {
-    const l = el.ownerDocument.querySelector(`label[for="${el.id.replace(/["\\]/g, '\\$&')}"]`)
-    if (l?.textContent) return clean(l.textContent)
-  }
+  const forLabel = labelByFor(el)
+  if (forLabel) return forLabel
   const wrap = el.closest('label')
   if (wrap?.textContent) return clean(wrap.textContent)
 
@@ -94,8 +93,4 @@ function labelFor(el: HTMLElement): string {
   if (label?.textContent) return clean(label.textContent)
 
   return clean(el.getAttribute('placeholder') || '')
-}
-
-function clean(s: string): string {
-  return s.replace(/[*✱]/g, ' ').replace(/\s+/g, ' ').trim()
 }
