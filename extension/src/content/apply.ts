@@ -128,27 +128,48 @@ async function waitFor<T>(get: () => T | null, timeoutMs = 2000, stepMs = 50): P
  *  blind first-row pick. Timing/DOM varies per ATS, so this is the piece that
  *  MUST be live-verified. */
 export async function fillCombobox(trigger: HTMLElement, value: string): Promise<boolean> {
-  // Interact by dispatching click EVENTS — same sanctioned pattern as
-  // selectRadio; the no-submit guard forbids the direct click method.
-  const clickEvent = () => new MouseEvent('click', { bubbles: true })
-  trigger.dispatchEvent(clickEvent()) // open the listbox popup
+  // Interact via dispatched pointer EVENTS (never the direct click method — the
+  // no-submit guard forbids it). NOTE: this is an educated-guess hardening from a
+  // live Workday run where the dropdown OPENED but never selected. Two likely
+  // causes addressed: (1) the option list is VIRTUALIZED — only visible rows are
+  // in the DOM — so we type into the search to filter our match into existence;
+  // (2) rows select on the full mouse sequence, not a lone click. LIVE-VERIFY on
+  // a real Workday form is still required to confirm.
+  const mouse = (el: Element, ...types: string[]): void => {
+    for (const t of types) el.dispatchEvent(new MouseEvent(t, { bubbles: true }))
+  }
+  const close = (): void => {
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  }
+
+  mouse(trigger, 'mousedown', 'mouseup', 'click') // open the listbox popup
   const listbox = await waitFor(() => document.querySelector('[role="listbox"]'))
   if (!listbox) return false
-  // typeahead: a search input filters the list (Workday renders one in the popup)
-  const search = listbox.querySelector('input') ?? document.querySelector('[role="listbox"] input, [role="combobox"] input')
-  if (search instanceof HTMLInputElement) setNativeValue(search, value)
-  const options = await waitFor(() => {
-    const os = [...document.querySelectorAll<HTMLElement>('[role="option"]')].filter(
+
+  // Typeahead: type the value into the popup search so a virtualized list filters
+  // down until our match actually renders into the DOM.
+  const search = (listbox.querySelector('input') ??
+    document.querySelector('[role="listbox"] input, [role="combobox"] input')) as HTMLInputElement | null
+  if (search) {
+    search.focus()
+    setNativeValue(search, value)
+    search.dispatchEvent(new KeyboardEvent('keyup', { key: value.slice(-1) || 'a', bubbles: true }))
+  }
+
+  // Wait for the exact/unique MATCH to be present (post-filter) — not just any option.
+  const match = await waitFor(() => {
+    const opts = [...document.querySelectorAll<HTMLElement>('[role="option"]')].filter(
       (o) => (o.textContent ?? '').trim() && norm(o.textContent ?? '') !== 'select one',
     )
-    return os.length ? os : null
+    return opts.length ? pickOption(opts, value, (o) => o.textContent ?? '') : null
   })
-  const match = options && pickOption(options, value, (o) => o.textContent ?? '')
   if (!match) {
-    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) // close, untouched
+    close() // no confident match → leave the field untouched, never a wrong/first-row pick
     return false
   }
-  match.dispatchEvent(clickEvent()) // select the matched option
+
+  match.scrollIntoView?.({ block: 'nearest' }) // a virtualized row must be in view to receive events
+  mouse(match, 'mousedown', 'mouseup', 'click') // select on the full pointer sequence, not click alone
   return true
 }
 

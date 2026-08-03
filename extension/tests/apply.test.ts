@@ -151,6 +151,37 @@ describe('fillCombobox (P2: the Workday ARIA-combobox driver)', () => {
     expect(picked).toBe('United States of America') // exact/unique match, never a blind first row
   })
 
+  test('virtualized list: types into search to filter the match into the DOM, then picks it', async () => {
+    // the live Workday symptom: the match option isn't rendered until the search
+    // narrows the (huge, virtualized) list. Driver must type, wait, THEN pick.
+    document.body.innerHTML = '<button aria-haspopup="listbox">Select One</button>'
+    const btn = document.body.firstElementChild as HTMLElement
+    let picked = ''
+    btn.addEventListener('mousedown', () => {
+      if (document.querySelector('[role=listbox]')) return
+      const lb = document.createElement('div')
+      lb.setAttribute('role', 'listbox')
+      const search = document.createElement('input')
+      lb.appendChild(search)
+      const ALL = ['United States of America', 'United Kingdom', 'Uruguay']
+      search.addEventListener('input', () => {
+        lb.querySelectorAll('[role=option]').forEach((o) => o.remove())
+        if (!search.value) return
+        for (const t of ALL)
+          if (t.toLowerCase().includes(search.value.toLowerCase())) {
+            const o = document.createElement('div')
+            o.setAttribute('role', 'option')
+            o.textContent = t
+            o.addEventListener('click', () => (picked = t))
+            lb.appendChild(o)
+          }
+      })
+      document.body.appendChild(lb) // opens EMPTY — the match only appears after typing
+    })
+    expect(await fillCombobox(btn, 'United States')).toBe(true)
+    expect(picked).toBe('United States of America')
+  })
+
   test('no match → false, nothing picked (never a blind first-row pick)', async () => {
     const btn = withPopup(
       '<button aria-haspopup="listbox">-</button>',
