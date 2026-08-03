@@ -24,6 +24,16 @@ async function handle(msg: { type?: string; [k: string]: unknown }): Promise<unk
         method: 'POST',
         body: JSON.stringify({ host: msg.host, fields: msg.fields }),
       })
+    case 'CORRECT': // T19 learning loop — structure + corrected canonical only, NEVER a value
+      return api('/autofill/correct', {
+        method: 'POST',
+        body: JSON.stringify({
+          host: msg.host,
+          fields: msg.fields,
+          field_ref: msg.field_ref,
+          corrected_canonical: msg.corrected_canonical,
+        }),
+      })
     case 'ANSWER': // T13 — question + job_id + host only; never other filled data or page HTML
       return api<AnswerResult>('/autofill/answer', {
         method: 'POST',

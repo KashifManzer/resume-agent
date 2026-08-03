@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { detectFields } from '../src/content/detector'
+import { detectFields, pageSig } from '../src/content/detector'
 import { loadFixture } from './util'
 
 describe('detectFields', () => {
@@ -76,6 +76,52 @@ describe('detectFields', () => {
     expect(q.descriptor.context).toContain('Are you authorized to work?') // fieldset legend
     // a nearby filled input's VALUE must never leak into context (privacy boundary)
     expect(q.descriptor.context).not.toContain('SECRET VALUE')
+  })
+
+  test('combobox (T19): detects a Workday-style combobox; label is structural, aria-label (with value) never leaks', () => {
+    document.body.innerHTML = `
+      <div data-automation-id="applyFlowPage">
+        <div data-automation-id="countryField">
+          <label>Country</label>
+          <button type="button" aria-haspopup="listbox" aria-label="Country United States of America Required">United States of America</button>
+        </div>
+      </div>
+      <nav><button type="button" aria-haspopup="listbox" aria-label="Settings">Settings</button></nav>
+    `
+    const fields = detectFields(document)
+    const combo = fields.find((f) => f.descriptor.tag === 'combobox')!
+    expect(combo).toBeTruthy()
+    expect(combo.descriptor.label).toBe('Country') // structural <label>, not the aria-label
+    expect(combo.descriptor.aria_label).toBe('') // value-bearing aria-label deliberately dropped
+    expect(fields.some((f) => f.descriptor.label === 'Settings')).toBe(false) // nav menu is not a form field
+    // the user's current VALUE must never appear anywhere in the structure-only descriptors
+    expect(fields.every((f) => !/United States of America/.test(JSON.stringify(f.descriptor)))).toBe(true)
+  })
+
+  test('combobox (T19): a screening combobox in a <fieldset> takes its <legend> as the label', () => {
+    document.body.innerHTML = `
+      <div data-automation-id="applyFlowPage">
+        <fieldset>
+          <legend>Are you legally authorized to work in the country to which you are applying?</legend>
+          <button type="button" aria-haspopup="listbox" aria-label=" Select One Required">Select One</button>
+        </fieldset>
+      </div>
+    `
+    const combo = detectFields(document).find((f) => f.descriptor.tag === 'combobox')!
+    expect(combo.descriptor.label).toContain('legally authorized to work') // from the <legend>
+    expect(combo.descriptor.aria_label).toBe('') // never the value-bearing aria-label
+  })
+
+  test('pageSig (T19 multi-step): stable within a step, changes across steps', () => {
+    document.body.innerHTML = '<input name="a" /><input name="b" />'
+    const sig1 = pageSig(detectFields(document))
+    expect(pageSig(detectFields(document))).toBe(sig1) // same page re-detected → same sig
+    // filling a value must NOT change the sig (it keys off structure, not values)
+    ;(document.querySelector('[name=a]') as HTMLInputElement).value = 'typed'
+    expect(pageSig(detectFields(document))).toBe(sig1)
+    // a different step (different fields) → different sig
+    document.body.innerHTML = '<input name="c" /><textarea name="d"></textarea>'
+    expect(pageSig(detectFields(document))).not.toBe(sig1)
   })
 
   test('context (T19): empty when the field has no heading/legend around it', () => {

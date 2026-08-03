@@ -41,7 +41,7 @@ export function classifyQuestion(q: string): Category {
   return 'other'
 }
 
-interface Want {
+export interface Want {
   text: string | null // desired answer ('yes' | 'no' | 'decline' | a demographic value), null = leave it
   review: boolean
   reason?: string
@@ -80,6 +80,16 @@ function wanted(cat: Category, p: Profile): Want {
 
 function whyReview(v: string | null | undefined, what: string): string | undefined {
   return yesno(v) ? undefined : `add your ${what} in your profile so this can fill`
+}
+
+/** The desired answer for a screening/demographic question, independent of the
+ *  widget (T19): category from the question text, value from the user's OWN
+ *  profile self-ID, always flagged for review. Returns null for a non-screening
+ *  question (→ leave it to the factual mapper). Drives radios, <select>s AND
+ *  comboboxes — the T17 policy, one source, three widgets. */
+export function screeningWant(question: string, profile: Profile): Want | null {
+  const cat = classifyQuestion(question)
+  return cat === 'other' ? null : wanted(cat, profile)
 }
 
 /** Find the option that matches the wanted answer. Yes/No/decline match by the

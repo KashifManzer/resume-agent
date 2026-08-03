@@ -28,6 +28,38 @@ export function setNativeValue(el: Valued, value: string): void {
   el.dispatchEvent(new Event('change', { bubbles: true }))
 }
 
+/** Normalize option/label text for tolerant matching: lowercase, punctuation →
+ *  space, collapse whitespace. So "United States" matches "United States of
+ *  America". */
+function norm(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+/** Pick the candidate matching `value`: exact normalized match on its text (or
+ *  optional alt text like an <option> value) wins; else the UNIQUE candidate
+ *  whose text CONTAINS the value. Returns null on no match OR ambiguity — never
+ *  guess a wrong option on a submitted application. Shared by <select> +
+ *  combobox (T19). */
+export function pickOption<T>(items: T[], value: string, textOf: (t: T) => string, altOf?: (t: T) => string): T | null {
+  const want = norm(value)
+  if (!want) return null
+  const exact = items.find((it) => norm(textOf(it)) === want || (altOf ? norm(altOf(it)) === want : false))
+  if (exact) return exact
+  const contains = items.filter((it) => norm(textOf(it)).includes(want))
+  return contains.length === 1 ? contains[0] : null
+}
+
+/** Select the <option> matching `value`. Returns false (leaves the select
+ *  untouched) on no match/ambiguity, so the caller flags it — never a wrong pick. */
+export function setSelectValue(el: HTMLSelectElement, value: string): boolean {
+  // skip the empty / "Select One" placeholder option — it is never an answer.
+  const opts = [...el.options].filter((o) => o.value !== '' && norm(o.text) !== 'select one')
+  const match = pickOption(opts, value, (o) => o.text, (o) => o.value)
+  if (!match) return false
+  setNativeValue(el, match.value)
+  return true
+}
+
 /** Select one radio option the way a real click would (T17). Native `checked`
  *  setter (bypass the framework shim) + a bubbling click/change so React/Vue
  *  radio groups register the choice. Radios never toggle off, so this is safe. */
@@ -69,14 +101,95 @@ export function fitMaxLength(el: HTMLInputElement | HTMLTextAreaElement, text: s
   return max > 0 && text.length > max ? text.slice(0, max) : text
 }
 
+/** True for an ARIA combobox trigger (Workday Country/State/Phone-type): an
+ *  element that opens a listbox popup. Its options live outside it, so it needs
+ *  the async open→type→pick flow below, not a plain value write. */
+export function isCombobox(el: Element): boolean {
+  return el.matches('[role="combobox"], [aria-haspopup="listbox"]')
+}
+
+/** Poll `get` until it returns truthy or the timeout elapses — the popup listbox
+ *  renders a beat after the trigger opens, and re-filters a beat after typing.
+ *  Small and dependency-free. */
+async function waitFor<T>(get: () => T | null, timeoutMs = 2000, stepMs = 50): Promise<T | null> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const v = get()
+    if (v) return v
+    if (Date.now() >= deadline) return null
+    await new Promise((r) => setTimeout(r, stepMs))
+  }
+}
+
+/** Drive an ARIA combobox to `value` (T19, the Workday lane): open the popup,
+ *  type into its search box if present (typeahead), wait for the listbox, then
+ *  click the option whose text exactly/uniquely matches. Returns false — closing
+ *  the popup, leaving the field untouched — on no match or ambiguity; NEVER a
+ *  blind first-row pick. Timing/DOM varies per ATS, so this is the piece that
+ *  MUST be live-verified. */
+export async function fillCombobox(trigger: HTMLElement, value: string): Promise<boolean> {
+  // Interact by dispatching click EVENTS — same sanctioned pattern as
+  // selectRadio; the no-submit guard forbids the direct click method.
+  const clickEvent = () => new MouseEvent('click', { bubbles: true })
+  trigger.dispatchEvent(clickEvent()) // open the listbox popup
+  const listbox = await waitFor(() => document.querySelector('[role="listbox"]'))
+  if (!listbox) return false
+  // typeahead: a search input filters the list (Workday renders one in the popup)
+  const search = listbox.querySelector('input') ?? document.querySelector('[role="listbox"] input, [role="combobox"] input')
+  if (search instanceof HTMLInputElement) setNativeValue(search, value)
+  const options = await waitFor(() => {
+    const os = [...document.querySelectorAll<HTMLElement>('[role="option"]')].filter(
+      (o) => (o.textContent ?? '').trim() && norm(o.textContent ?? '') !== 'select one',
+    )
+    return os.length ? os : null
+  })
+  const match = options && pickOption(options, value, (o) => o.textContent ?? '')
+  if (!match) {
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) // close, untouched
+    return false
+  }
+  match.dispatchEvent(clickEvent()) // select the matched option
+  return true
+}
+
 /** Execute a fill plan against the detected elements. 'blank'/'flag' items are
- *  deliberately left untouched — we never write a value we're unsure of. */
+ *  deliberately left untouched — we never write a value we're unsure of.
+ *  Comboboxes are skipped here — the async pass (fillComboboxes) handles them. */
 export function applyPlan(fields: DetectedField[], plan: PlanItem[], resume: File | null): void {
   const byRef = new Map(fields.map((f) => [f.descriptor.field_ref, f.el]))
   for (const item of plan) {
     const el = byRef.get(item.field_ref)
     if (!el) continue
-    if (item.action === 'fill' && item.value != null) setNativeValue(el as Valued, item.value)
-    else if (item.action === 'attach' && resume) attachFile(el as HTMLInputElement, resume)
+    if (item.action === 'fill' && item.value != null) {
+      if (isCombobox(el)) continue // async combobox pass owns these
+      if (el instanceof HTMLSelectElement) {
+        // A dropdown needs option-matching, not a raw value write (P2). No option
+        // matched → downgrade to blank + flag; never leave a wrong selection.
+        if (!setSelectValue(el, item.value)) {
+          item.action = 'blank'
+          item.value = undefined
+          item.reason = "couldn't match a dropdown option — pick it yourself"
+        }
+      } else {
+        setNativeValue(el as Valued, item.value)
+      }
+    } else if (item.action === 'attach' && resume) attachFile(el as HTMLInputElement, resume)
+  }
+}
+
+/** Async fill pass for ARIA comboboxes (T19). Runs after applyPlan; mutates each
+ *  combobox 'fill' item to blank + flag when the option can't be matched, so an
+ *  unmatched combobox is never left in a wrong state. */
+export async function fillComboboxes(fields: DetectedField[], plan: PlanItem[]): Promise<void> {
+  const byRef = new Map(fields.map((f) => [f.descriptor.field_ref, f.el]))
+  for (const item of plan) {
+    if (item.action !== 'fill' || item.value == null) continue
+    const el = byRef.get(item.field_ref)
+    if (!el || !isCombobox(el)) continue
+    if (!(await fillCombobox(el as HTMLElement, item.value))) {
+      item.action = 'blank'
+      item.value = undefined
+      item.reason = "couldn't match a dropdown option — pick it yourself"
+    }
   }
 }

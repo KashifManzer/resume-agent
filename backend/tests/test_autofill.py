@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app import db
 from app.canonical import CANONICAL
 from app.main import app
-from app.schemas.autofill import FieldDescriptor
+from app.schemas.autofill import AutofillCorrectIn, FieldDescriptor
 from app.services import field_map, llm
 
 
@@ -142,3 +142,61 @@ def test_llm_lane_feeds_structural_context(monkeypatch):
     out = field_map._llm_map([fd(0, label="Status", context="Work Authorization")])
     assert out[0] == "work_authorization"
     assert "Work Authorization" in captured["user"]  # context fed to the LLM lane
+
+
+# --- correction / learning loop (T19) ---------------------------------------
+
+
+def test_correct_updates_cache_so_next_resolve_serves_it(monkeypatch):
+    # A field the LLM couldn't map, corrected once, is served from cache next run.
+    monkeypatch.setattr(field_map, "_llm_map", lambda un: {f.field_ref: "unknown" for f in un})
+    fields = [fd(0, label="Referral code"), fd(1, type="email")]
+    with db.SessionLocal() as s:
+        first = {m.field_ref: m for m in field_map.resolve("corr.example", fields, s)}
+    assert first[0].canonical == "unknown"
+
+    with db.SessionLocal() as s:
+        field_map.correct("corr.example", fields, 0, "linkedin", s)  # user fixes it
+
+    with db.SessionLocal() as s:
+        second = {m.field_ref: m for m in field_map.resolve("corr.example", fields, s)}
+    assert second[0].canonical == "linkedin" and second[0].source == "cache"
+    assert second[1].canonical == "email"  # the rest of the form survives the correction
+
+
+def test_correct_coerces_out_of_vocab_to_unknown(monkeypatch):
+    monkeypatch.setattr(field_map, "_llm_map", lambda un: {})
+    fields = [fd(0, label="X", type="email")]
+    with db.SessionLocal() as s:
+        field_map.resolve("corr2.example", fields, s)
+        field_map.correct("corr2.example", fields, 0, "not_a_real_canonical", s)
+        out = {m.field_ref: m for m in field_map.resolve("corr2.example", fields, s)}
+    assert out[0].canonical == "unknown"
+
+
+def test_correct_re_correction_wins(monkeypatch):
+    monkeypatch.setattr(field_map, "_llm_map", lambda un: {f.field_ref: "unknown" for f in un})
+    fields = [fd(0, label="Q")]
+    with db.SessionLocal() as s:
+        field_map.resolve("corr3.example", fields, s)
+        field_map.correct("corr3.example", fields, 0, "linkedin", s)
+        field_map.correct("corr3.example", fields, 0, "github", s)  # corrected again
+        out = {m.field_ref: m for m in field_map.resolve("corr3.example", fields, s)}
+    assert out[0].canonical == "github"
+
+
+def test_correct_endpoint_is_structure_only_and_serves_from_cache(monkeypatch):
+    # Privacy: the correction payload carries structure + canonical, never a value.
+    assert set(AutofillCorrectIn.model_fields) == {"host", "fields", "field_ref", "corrected_canonical"}
+    assert "value" not in AutofillCorrectIn.model_fields
+    monkeypatch.setattr(field_map, "_llm_map", lambda un: {f.field_ref: "unknown" for f in un})
+    c = TestClient(app)
+    fields = [{"field_ref": 0, "label": "Referral"}]
+    c.post("/autofill/map", json={"host": "ep.example", "fields": fields})
+    r = c.post(
+        "/autofill/correct",
+        json={"host": "ep.example", "fields": fields, "field_ref": 0, "corrected_canonical": "linkedin"},
+    )
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    served = c.post("/autofill/map", json={"host": "ep.example", "fields": fields}).json()["mappings"]
+    assert served[0]["canonical"] == "linkedin" and served[0]["source"] == "cache"

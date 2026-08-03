@@ -38,3 +38,15 @@ class FieldMappingOut(BaseModel):
 
 class AutofillMapOut(BaseModel):
     mappings: list[FieldMappingOut]
+
+
+class AutofillCorrectIn(BaseModel):
+    """A user correction (T19 learning loop). Carries the field STRUCTURE (so the
+    server recomputes the SAME form_sig as /map) + the canonical the user's action
+    revealed — NEVER the value. Upserts the FieldMapping cache so the next run on
+    this form is right, deterministically."""
+
+    host: str
+    fields: list[FieldDescriptor]  # structure only — same privacy boundary as /map
+    field_ref: int
+    corrected_canonical: str

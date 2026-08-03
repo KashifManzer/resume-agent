@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { planFill } from '../src/content/plan'
+import { planFill, reverseCanonical } from '../src/content/plan'
 import type { Canonical, Descriptor, Mapping, Profile } from '../src/shared/types'
 
 const profile: Profile = {
@@ -81,6 +81,36 @@ describe('planFill (fill decisions — the trust boundary)', () => {
     expect(plan(ds, [mp(0, 'resume_upload')], false)[0].action).toBe('blank')
   })
 
+  test('screening combobox routes through T17 (Yes/No from self-ID), always flagged (T19)', () => {
+    const eligible: Profile = { ...profile, work_eligible: 'yes' }
+    const p = planFill(
+      [d(0, { tag: 'combobox', label: 'Are you legally authorized to work in the country?' })],
+      new Map(),
+      eligible,
+      false,
+    )
+    expect(p[0]).toMatchObject({ action: 'fill', value: 'yes', control: 'choice', needsReview: true })
+  })
+
+  test('screening combobox with no profile self-ID → blank, never guessed (T19)', () => {
+    const p = plan([d(0, { tag: 'combobox', label: 'Are you legally authorized to work?' })], [])
+    expect(p[0].action).toBe('blank')
+  })
+
+  test('a non-screening dropdown (Country) stays factual, not routed to T17 (T19)', () => {
+    const p = plan([d(0, { tag: 'combobox', label: 'Country' })], [mp(0, 'location')])
+    expect(p[0]).toMatchObject({ action: 'fill', value: 'London, UK' })
+  })
+
+  test('a consent/terms checkbox is flagged, NEVER auto-accepted (trust boundary, T19)', () => {
+    const p = plan(
+      [d(0, { type: 'checkbox', required: true, label: 'Yes, I acknowledge that I have read and understand the policy.' })],
+      [mp(0, 'unknown', 0.2)],
+    )
+    expect(p[0].action).toBe('flag') // surfaced for the user; we never accept terms on their behalf
+    expect(p[0].value).toBeUndefined()
+  })
+
   test('unknown non-required fields are skipped; unknown required is flagged', () => {
     const p = plan(
       [d(0, { required: false }), d(1, { required: true })],
@@ -88,5 +118,26 @@ describe('planFill (fill decisions — the trust boundary)', () => {
     )
     expect(p.find((x) => x.field_ref === 0)).toBeUndefined()
     expect(p.find((x) => x.field_ref === 1)!.action).toBe('flag')
+  })
+})
+
+describe('reverseCanonical (T19 learning loop: infer the category from a landed value)', () => {
+  test('matches a profile value back to its canonical', () => {
+    expect(reverseCanonical('ada@analytical.io', profile)).toBe('email')
+    expect(reverseCanonical('555-0100', profile)).toBe('phone')
+    expect(reverseCanonical('https://github.com/ada', profile)).toBe('github')
+    expect(reverseCanonical('London, UK', profile)).toBe('location')
+    expect(reverseCanonical('Ada Lovelace', profile)).toBe('full_name')
+    expect(reverseCanonical('Ada', profile)).toBe('first_name')
+    expect(reverseCanonical('Lovelace', profile)).toBe('last_name')
+  })
+
+  test('is case/whitespace tolerant', () => {
+    expect(reverseCanonical('  ADA@ANALYTICAL.IO ', profile)).toBe('email')
+  })
+
+  test('returns null when nothing in the profile matches (never guesses)', () => {
+    expect(reverseCanonical('some unrelated answer', profile)).toBe(null)
+    expect(reverseCanonical('', profile)).toBe(null)
   })
 })

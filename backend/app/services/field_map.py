@@ -193,3 +193,22 @@ def resolve(host: str, fields: list[FieldDescriptor], session: Session) -> list[
     session.commit()
 
     return [FieldMappingOut(field_ref=ref, **entry) for ref, entry in resolved.items()]
+
+
+def correct(host: str, fields: list[FieldDescriptor], field_ref: int, canonical: str, session: Session) -> None:
+    """T19 learning loop: upsert ONE field's mapping into the (host, form_sig)
+    cache from a user correction. Stored at HIGH confidence so it wins next run.
+    Coerced to the vocabulary. Structure + canonical only — no value ever reaches
+    this path. In the real flow a resolve() ran first (during the fill), so the
+    row exists and this just overrides one entry; the no-row case seeds it."""
+    canon = canonical if canonical in CANONICAL else "unknown"
+    sig = form_sig(fields)
+    entry = {"canonical": canon, "confidence": HIGH}
+    row = session.scalar(
+        select(FieldMapping).where(FieldMapping.host == host, FieldMapping.form_sig == sig)
+    )
+    if row:
+        row.mapping = {**row.mapping, str(field_ref): entry}  # reassign so SQLAlchemy sees the change
+    else:
+        session.add(FieldMapping(host=host, form_sig=sig, mapping={str(field_ref): entry}))
+    session.commit()

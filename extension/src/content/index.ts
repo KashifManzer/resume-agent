@@ -1,15 +1,16 @@
 // Content script (T12). Runs in the ATS page, in the user's own session. It
 // detects the form, fills factual fields, and attaches the tailored résumé —
 // then stops. There is NO code path here that clicks a submit control.
+import { FILL_THRESHOLD } from '../shared/config'
 import { sendToBackground } from '../shared/messaging'
 import type { AnswerResult, FillResult, Mapping, PdfPayload, PlanItem, Profile } from '../shared/types'
-import { alreadyFilled, anyChecked, applyPlan, fitMaxLength, selectRadio, setNativeValue } from './apply'
+import { alreadyFilled, anyChecked, applyPlan, fillComboboxes, fitMaxLength, isCombobox, selectRadio, setNativeValue } from './apply'
 import { decideChoice } from './choice-answer'
 import { detectRadioGroups } from './choices'
 import type { DetectedField } from './detector'
-import { detectFields } from './detector'
+import { detectFields, pageSig } from './detector'
 import { mapAll } from './mapper'
-import { planFill } from './plan'
+import { planFill, reverseCanonical } from './plan'
 import { focusField, renderProofMarks } from './proofmarks'
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -31,8 +32,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return
   }
   if (msg?.type === 'FILL') {
-    fill(msg.jobId as string | null)
-      .then(sendResponse)
+    const jobId = msg.jobId as string | null
+    fill(jobId)
+      .then((res) => {
+        if (!res.error) watchSteps(jobId) // T19: keep re-filling as the wizard advances
+        sendResponse(res)
+      })
       .catch((e) => sendResponse(empty(String(e?.message ?? e))))
     return true // keep the message channel open for the async response
   }
@@ -63,10 +68,16 @@ async function fill(jobId: string | null): Promise<FillResult> {
     }
   }
 
+  // T19 learning loop: before we fill anything, learn from the user's OWN prior
+  // fills — a field we couldn't map that already holds a profile value reveals
+  // its canonical. Sends the CATEGORY only; the value never leaves the page.
+  captureMappingCorrections(fields, mappings, profile)
+
   const resume = jobId ? await getResume(jobId) : null
 
   const plan = planFill(descriptors, mappings, profile, resume != null)
   applyPlan(fields, plan, resume)
+  await fillComboboxes(fields, plan) // T19: ARIA comboboxes (Workday) — async open→type→pick
   await answerFreeText(fields, plan, jobId)
 
   // T17: radio-group screening questions (work-auth, EEO, legal attestations) —
@@ -105,6 +116,7 @@ function reassertFills(fields: DetectedField[], plan: PlanItem[]): void {
       if (item.action !== 'fill' || item.value == null || item.control === 'choice') continue
       const f = byRef.get(item.field_ref)
       const el = f && liveElement(f)
+      if (el && isCombobox(el)) continue // comboboxes are re-driven by their own pass, never a raw re-write
       if (el && el.value.trim() === '') setNativeValue(el, item.value)
     }
   }
@@ -116,6 +128,60 @@ function reassertFills(fields: DetectedField[], plan: PlanItem[]): void {
   obs.observe(document.body, { childList: true, subtree: true })
   redo() // once now, in case the form never re-renders
   setTimeout(() => obs.disconnect(), 8000) // bounded: stop once it has surely settled
+}
+
+/** T19 learning loop: teach the backend from the user's own fills. For any field
+ *  we could NOT confidently map, if it already holds one of the user's profile
+ *  values, that reveals its canonical — send the CATEGORY back (structure +
+ *  canonical, NEVER the value) so the next run maps it from cache. Best-effort. */
+function captureMappingCorrections(fields: DetectedField[], mappings: Map<number, Mapping>, profile: Profile): void {
+  const descriptors = fields.map((f) => f.descriptor)
+  for (const f of fields) {
+    const m = mappings.get(f.descriptor.field_ref)
+    if (m && m.canonical !== 'unknown' && m.confidence >= FILL_THRESHOLD) continue // already confidently mapped
+    const value = (('value' in f.el ? (f.el as HTMLInputElement).value : '') || '').trim()
+    if (!value) continue
+    const canonical = reverseCanonical(value, profile)
+    if (!canonical) continue
+    sendToBackground({
+      type: 'CORRECT',
+      host: location.host,
+      fields: descriptors, // structure only
+      field_ref: f.descriptor.field_ref,
+      corrected_canonical: canonical, // the category — never the value
+    }).catch(() => {}) // a missed correction just means we re-learn next run
+  }
+}
+
+let stepWatcher: MutationObserver | null = null
+
+/** After the first Fill, re-run detect→map→fill each time a Workday-style
+ *  multi-step wizard advances to a NEW step (a different field set renders). The
+ *  user drives navigation (Save & Continue) — we NEVER advance or submit, we just
+ *  re-fill the page they land on. Keyed on the structural page signature and
+ *  debounced, so it never loops on fill()'s own DOM writes; idempotent, so a
+ *  spurious fire is harmless. ponytail: one observer for the page session. */
+function watchSteps(jobId: string | null): void {
+  if (stepWatcher) return // install once
+  let lastSig = pageSig(detectFields(document))
+  let busy = false
+  let timer = 0
+  stepWatcher = new MutationObserver(() => {
+    clearTimeout(timer)
+    timer = window.setTimeout(async () => {
+      if (busy) return
+      const sig = pageSig(detectFields(document))
+      if (sig === lastSig) return // still the same step
+      lastSig = sig
+      busy = true
+      try {
+        await fill(jobId)
+      } finally {
+        busy = false
+      }
+    }, 400) // debounce the wizard's render burst into one re-fill
+  })
+  stepWatcher.observe(document.body, { childList: true, subtree: true })
 }
 
 /** Answer Yes/No/choice radio groups deterministically (T17). Anchors each

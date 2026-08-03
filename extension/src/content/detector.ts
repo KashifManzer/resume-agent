@@ -12,6 +12,11 @@ const FILLABLE = 'input, select, textarea'
 // as one logical Yes/No/choice question, not one field per option.
 const SKIP_TYPES = new Set(['submit', 'button', 'reset', 'hidden', 'image', 'radio'])
 
+// ARIA combobox trigger (T19): Workday Country/State/Phone-type etc. — a control
+// that opens a listbox popup. Filled via the async open→type→pick path (apply.ts),
+// so it is detected here but written differently.
+const COMBOBOX = '[role="combobox"], button[aria-haspopup="listbox"]'
+
 /** Read every fillable field on the page into a structure-only Descriptor.
  *  Pure DOM read — no chrome APIs — so it unit-tests in jsdom over fixtures. */
 export function detectFields(root: Document | Element = document): DetectedField[] {
@@ -20,6 +25,7 @@ export function detectFields(root: Document | Element = document): DetectedField
     const tag = el.tagName.toLowerCase()
     const type = (el.getAttribute('type') || (tag === 'input' ? 'text' : tag)).toLowerCase()
     if (tag === 'input' && SKIP_TYPES.has(type)) continue
+    if (el.matches(COMBOBOX)) continue // an <input role=combobox> is handled by the combobox pass below
     // Never touch a CAPTCHA response field (e.g. Ashby's hidden g-recaptcha-response).
     if (/captcha/i.test(`${el.getAttribute('name') || ''} ${el.id}`)) continue
     if (isHoneypot(el)) continue // bot-trap fields: writing them flags us as a bot
@@ -42,7 +48,61 @@ export function detectFields(root: Document | Element = document): DetectedField
       },
     })
   }
+  for (const el of root.querySelectorAll<HTMLElement>(COMBOBOX)) {
+    if (!isFormCombobox(el) || !isVisible(el)) continue
+    out.push({
+      el,
+      descriptor: {
+        field_ref: out.length,
+        tag: 'combobox',
+        type: 'combobox',
+        name: el.getAttribute('name') || '',
+        id: el.id || '',
+        autocomplete: '',
+        // NEVER el's aria-label: on Workday it embeds the current VALUE
+        // ("Country United States of America Required"), a privacy-boundary leak.
+        aria_label: '',
+        placeholder: '',
+        label: comboboxLabel(el),
+        data_automation_id: el.getAttribute('data-automation-id') || '',
+        required: el.getAttribute('aria-required') === 'true',
+        context: contextFor(el),
+      },
+    })
+  }
   return out
+}
+
+/** A structural signature of the detected field set (T19 multi-step). Changes
+ *  when the page becomes a different form/step, but is stable across value fills
+ *  and proof-mark overlays (it keys off structure, not values) — so a wizard's
+ *  new step is detected without re-filling the same page. Order-independent. */
+export function pageSig(fields: DetectedField[]): string {
+  return fields
+    .map((f) => `${f.descriptor.tag}:${f.descriptor.type}:${f.descriptor.name}:${f.descriptor.label}`)
+    .sort()
+    .join('|')
+}
+
+/** A combobox that belongs to the application form — not a nav/utility menu
+ *  (Workday's "Settings" is also a `button[aria-haspopup=listbox]`). Scoped to a
+ *  form / the Workday apply flow, or carrying a field-level required flag. */
+function isFormCombobox(el: HTMLElement): boolean {
+  if (el.closest('nav, header, [role="navigation"], [role="menubar"]')) return false
+  return el.closest('form, [data-automation-id="applyFlowPage"]') !== null || el.getAttribute('aria-required') === 'true'
+}
+
+/** Structural label for a combobox — NEVER its aria-label (which on Workday
+ *  embeds the current value). Workday renders a single-field combobox with a
+ *  nearby `<label>` (Country) and a screening combobox inside a `<fieldset>`
+ *  whose `<legend>` is the question — resolve both, structurally. */
+function comboboxLabel(el: HTMLElement): string {
+  const byFor = labelByFor(el)
+  if (byFor) return byFor
+  const legend = el.closest('fieldset')?.querySelector('legend')?.textContent
+  if (legend?.trim()) return clean(legend)
+  const lbl = el.closest('.field, [data-automation-id], fieldset, li')?.querySelector('label')
+  return lbl?.textContent ? clean(lbl.textContent) : ''
 }
 
 function isVisible(el: HTMLElement): boolean {
