@@ -126,9 +126,15 @@ def _llm_map(unresolved: list[FieldDescriptor]) -> dict[int, str]:
     if not unresolved:
         return {}
     vocab = ", ".join(sorted(CANONICAL))
-    lines = "\n".join(
-        f"{f.field_ref}: label={f.label!r} name={f.name!r} type={f.type} tag={f.tag}" for f in unresolved
-    )
+
+    def _line(f: FieldDescriptor) -> str:
+        # T19: fold in the structure-only nearby context (heading/legend) when the
+        # page gave us one — it disambiguates bare labels ("Country" under a
+        # "Work Authorization" heading). Still no values, ever.
+        ctx = f" context={f.context!r}" if f.context else ""
+        return f"{f.field_ref}: label={f.label!r} name={f.name!r} type={f.type} tag={f.tag}{ctx}"
+
+    lines = "\n".join(_line(f) for f in unresolved)
     messages = [
         {
             "role": "system",

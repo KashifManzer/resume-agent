@@ -19,6 +19,9 @@ class FieldDescriptor(BaseModel):
     label: str = ""
     data_automation_id: str = ""  # Workday's primary field signal (structure, not a value)
     required: bool = False
+    # T19: structure-only nearby signal (enclosing heading/legend text) for the
+    # LLM lane. Labels/headings only — never a filled value (privacy boundary).
+    context: str = ""
 
 
 class AutofillMapIn(BaseModel):

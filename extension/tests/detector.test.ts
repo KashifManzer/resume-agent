@@ -60,6 +60,30 @@ describe('detectFields', () => {
     expect(names).not.toContain('nickname') // text: opacity:0 is a honeypot tell, drop it
   })
 
+  test('context (T19): captures enclosing heading + legend, never a nearby value', () => {
+    document.body.innerHTML = `
+      <section>
+        <h3>Work Authorization</h3>
+        <input name="prefilled" type="text" value="SECRET VALUE" />
+        <fieldset>
+          <legend>Are you authorized to work?</legend>
+          <input name="q" type="text" />
+        </fieldset>
+      </section>
+    `
+    const q = detectFields(document).find((f) => f.descriptor.name === 'q')!
+    expect(q.descriptor.context).toContain('Work Authorization') // section heading
+    expect(q.descriptor.context).toContain('Are you authorized to work?') // fieldset legend
+    // a nearby filled input's VALUE must never leak into context (privacy boundary)
+    expect(q.descriptor.context).not.toContain('SECRET VALUE')
+  })
+
+  test('context (T19): empty when the field has no heading/legend around it', () => {
+    document.body.innerHTML = `<input name="lonely" type="text" />`
+    const f = detectFields(document).find((d) => d.descriptor.name === 'lonely')!
+    expect(f.descriptor.context).toBe('')
+  })
+
   test('skips honeypot + hidden decoy fields, keeps the real one (T13)', () => {
     document.body.innerHTML = `
       <input name="email" type="email" />

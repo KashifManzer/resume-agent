@@ -38,6 +38,7 @@ export function detectFields(root: Document | Element = document): DetectedField
         label: labelFor(el),
         data_automation_id: el.getAttribute('data-automation-id') || '',
         required: el.hasAttribute('required') || el.getAttribute('aria-required') === 'true',
+        context: contextFor(el),
       },
     })
   }
@@ -66,6 +67,32 @@ function isHoneypot(el: HTMLElement): boolean {
   const sig = `${el.getAttribute('name') || ''} ${el.id} ${el.className}`
   if (HONEYPOT.test(sig)) return true
   return el.closest('[aria-hidden="true"]') !== null
+}
+
+const HEADING = 'h1, h2, h3, h4, h5, h6, [role="heading"]'
+
+/** Structure-only nearby signal for the LLM mapping lane (T19): the enclosing
+ *  fieldset legend + the nearest section heading above the field. Drawn ONLY
+ *  from heading/legend elements — never from inputs or their values — so no
+ *  entered value can cross the privacy boundary. Capped so the payload stays small. */
+function contextFor(el: HTMLElement): string {
+  const parts: string[] = []
+  const legend = el.closest('fieldset')?.querySelector('legend')?.textContent
+  if (legend?.trim()) parts.push(clean(legend))
+  const heading = nearestHeading(el)
+  if (heading && !parts.includes(heading)) parts.push(heading)
+  return parts.join(' · ').slice(0, 200)
+}
+
+/** The nearest section heading preceding the field: scan previous siblings up
+ *  the ancestor chain, heading elements only (structural, never a value). */
+function nearestHeading(el: Element): string {
+  for (let node: Element | null = el; node && node !== document.body; node = node.parentElement) {
+    for (let sib = node.previousElementSibling; sib; sib = sib.previousElementSibling) {
+      if (sib.matches(HEADING) && sib.textContent?.trim()) return clean(sib.textContent)
+    }
+  }
+  return ''
 }
 
 /** Resolve the human label for a field, trying the reliable signals first. */

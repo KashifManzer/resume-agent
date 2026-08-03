@@ -32,6 +32,10 @@ export interface Descriptor {
   label: string // resolved associated <label> text
   data_automation_id: string // Workday's primary field signal (e.g. legalNameSection_firstName)
   required: boolean
+  // T19: structure-only nearby signal (enclosing heading/legend text) for the
+  // LLM mapping lane — never a value. Optional; the deterministic heuristic
+  // ignores it, so mapper.ts/field_map.py parity is unaffected.
+  context?: string
 }
 
 export interface Mapping {

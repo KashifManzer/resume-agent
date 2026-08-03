@@ -20,6 +20,18 @@ describe('setNativeValue (React-controlled inputs need dispatched events)', () =
     setNativeValue(el, 'line one\nline two')
     expect(el.value).toBe('line one\nline two')
   })
+
+  test('drives a <select> — the generic write path covers dropdowns (T19)', () => {
+    document.body.innerHTML =
+      '<select id="s"><option value="">—</option><option value="us">United States</option></select>'
+    const el = document.getElementById('s') as HTMLSelectElement
+    const seen: string[] = []
+    el.addEventListener('change', (e) => seen.push(`change:${e.bubbles}`))
+    setNativeValue(el, 'us') // matching an <option> value is P2's job; the write path is generic now
+    expect(el.value).toBe('us')
+    expect(el.selectedIndex).toBe(1)
+    expect(seen).toEqual(['change:true'])
+  })
 })
 
 describe('free-text answer guards (T13)', () => {

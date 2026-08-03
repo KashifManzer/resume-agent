@@ -118,10 +118,27 @@ def test_autofill_map_endpoint(monkeypatch):
 
 def test_descriptor_schema_is_structure_only():
     # Privacy trust boundary: the request model can carry ONLY field structure —
-    # never a filled value and never page HTML.
+    # never a filled value and never page HTML. `context` (T19) is nearby
+    # heading/legend TEXT — structural, still never a value.
     allowed = {
         "field_ref", "tag", "type", "name", "id",
         "autocomplete", "aria_label", "placeholder", "label", "data_automation_id", "required",
+        "context",
     }
     assert set(FieldDescriptor.model_fields) == allowed
     assert "value" not in FieldDescriptor.model_fields
+
+
+def test_llm_lane_feeds_structural_context(monkeypatch):
+    # T19: an ambiguous label the heuristic can't resolve is disambiguated by the
+    # structure-only `context` (section heading) — which must reach the LLM prompt.
+    captured = {}
+
+    def fake_chat(messages, **kw):
+        captured["user"] = messages[-1]["content"]
+        return {"mappings": [{"field_ref": 0, "canonical": "work_authorization"}]}
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    out = field_map._llm_map([fd(0, label="Status", context="Work Authorization")])
+    assert out[0] == "work_authorization"
+    assert "Work Authorization" in captured["user"]  # context fed to the LLM lane
