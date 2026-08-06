@@ -1,5 +1,7 @@
 import { useState } from 'react'
 
+import { InlineError } from '@/components/states/InlineError'
+import { ListSkeleton } from '@/components/states/ListSkeleton'
 import { Button } from '@/components/ui/button'
 import { useAnswers, useCreateAnswer, useDeleteAnswer, useUpdateAnswer } from '@/hooks/useAnswers'
 import type { Answer, AnswerMode } from '@/lib/types'
@@ -24,10 +26,10 @@ const inputCls =
   'w-full rounded-md border border-cream-soft/20 bg-transparent px-3 py-2.5 font-mono text-sm text-cream placeholder:text-cream-soft/40 focus:border-marigold focus:outline-none'
 
 export function AnswerBank() {
-  const { data: answers = [] } = useAnswers()
+  const { data: answers, isPending, isError, refetch } = useAnswers()
   const create = useCreateAnswer()
-  const core = answers.filter((a) => a.canonical)
-  const custom = answers.filter((a) => !a.canonical)
+  const core = (answers ?? []).filter((a) => a.canonical)
+  const custom = (answers ?? []).filter((a) => !a.canonical)
 
   const [q, setQ] = useState('')
   const [a, setA] = useState('')
@@ -40,14 +42,22 @@ export function AnswerBank() {
 
   return (
     <div className="space-y-4">
-      <ul className="space-y-3">
-        {core.map((row) => (
-          <Row key={row.id} row={row} title={LABELS[row.canonical!] ?? row.canonical!} />
-        ))}
-        {custom.map((row) => (
-          <Row key={row.id} row={row} title={row.question ?? '(custom)'} deletable />
-        ))}
-      </ul>
+      {isPending ? (
+        <ListSkeleton rows={6} />
+      ) : isError ? (
+        <InlineError onRetry={() => refetch()}>
+          Couldn&rsquo;t load your answer bank — is the backend running?
+        </InlineError>
+      ) : (
+        <ul className="space-y-3">
+          {core.map((row) => (
+            <Row key={row.id} row={row} title={LABELS[row.canonical!] ?? row.canonical!} />
+          ))}
+          {custom.map((row) => (
+            <Row key={row.id} row={row} title={row.question ?? '(custom)'} deletable />
+          ))}
+        </ul>
+      )}
 
       {/* add a custom Q&A */}
       <div className="space-y-3 rounded-md border border-dashed border-cream-soft/20 p-4">

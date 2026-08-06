@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { motion } from 'motion/react'
 
 import { Dropzone } from '@/components/Dropzone'
+import { ListSkeleton } from '@/components/states/ListSkeleton'
 import { Button } from '@/components/ui/button'
 import { Kicker } from '@/components/ui/Kicker'
 import { Sheet } from '@/components/ui/Sheet'
@@ -28,6 +29,54 @@ function Eyebrow({ n, children }: { n: string; children: React.ReactNode }) {
   )
 }
 
+// The honesty differentiator, told as an editorial spec band on the desk — the
+// four things that make this tailoring trustworthy. Presentation only.
+const PILLARS = [
+  {
+    tag: 'latex-native',
+    title: 'Tailors your real .tex',
+    body: 'We edit your actual LaTeX source and compile a true one-page PDF — never a lossy re-type.',
+  },
+  {
+    tag: 'no fabrication',
+    title: "Only what's yours",
+    body: 'Nothing invented. Every claim we add to hit the match is surfaced for you to stand behind.',
+  },
+  {
+    tag: 'grounded ATS',
+    title: 'Scored on real keywords',
+    body: "JD-fit measured against the posting's actual terms, before and after — no vanity number.",
+  },
+  {
+    tag: 'quality gate',
+    title: 'A hiring agent signs off',
+    body: 'An independent hiring-agent reviews the result and must pass it before it reaches you.',
+  },
+] as const
+
+function Guarantees() {
+  return (
+    <motion.section
+      variants={rise}
+      aria-label="How the tailoring stays honest"
+      className="border-y border-desk-line py-8 lg:col-span-2"
+    >
+      <div className="grid grid-cols-1 gap-x-8 gap-y-7 sm:grid-cols-2 lg:grid-cols-4">
+        {PILLARS.map((p, i) => (
+          <div key={p.tag}>
+            <div className="flex items-baseline gap-2 font-mono text-[10px] tracking-[0.26em] uppercase">
+              <span className="text-marigold tabular-nums">0{i + 1}</span>
+              <span className="text-cream-soft">{p.tag}</span>
+            </div>
+            <h3 className="mt-2.5 font-serif text-xl leading-tight text-cream">{p.title}</h3>
+            <p className="mt-1.5 text-[13px] leading-relaxed text-cream-soft">{p.body}</p>
+          </div>
+        ))}
+      </div>
+    </motion.section>
+  )
+}
+
 export function Compose() {
   const navigate = useNavigate()
   const [jd, setJd] = useState('')
@@ -36,7 +85,7 @@ export function Compose() {
   const [selectedIds, setSelectedIds] = useState<string[] | null>(null) // null = not yet seeded
   const create = useCreateJob()
   const jdFetch = useJdFromUrl()
-  const { data: resumes = [] } = useResumes()
+  const { data: resumes = [], isPending: resumesLoading } = useResumes()
 
   // pre-check the default library résumé once, without clobbering user edits
   useEffect(() => {
@@ -92,6 +141,8 @@ export function Compose() {
           proofed PDF.
         </p>
       </motion.header>
+
+      <Guarantees />
 
       <motion.div variants={rise} className="space-y-4">
         <label htmlFor="jd" className="block">
@@ -152,7 +203,8 @@ export function Compose() {
         <Eyebrow n="02">your sources · .tex files</Eyebrow>
 
         {/* pick from the saved library (default pre-checked) — no forced re-upload */}
-        {resumes.length > 0 && (
+        {resumesLoading && <ListSkeleton rows={2} />}
+        {!resumesLoading && resumes.length > 0 && (
           <div className="space-y-2">
             <Sheet as="ul" sm className="divide-y divide-border overflow-hidden">
               {resumes.map((r) => (
@@ -180,7 +232,7 @@ export function Compose() {
           </div>
         )}
 
-        {resumes.length === 0 && (
+        {!resumesLoading && resumes.length === 0 && (
           <p className="font-mono text-[11px] leading-relaxed text-cream-soft">
             No saved résumés yet — drop one below for this run, or{' '}
             <Link to="/library" className="text-marigold underline-offset-2 hover:underline">

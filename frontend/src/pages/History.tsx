@@ -1,7 +1,8 @@
 import { Link } from 'react-router-dom'
 
 import { EmptyState } from '@/components/states/EmptyState'
-import { Loading } from '@/components/states/Loading'
+import { InlineError } from '@/components/states/InlineError'
+import { ListSkeleton } from '@/components/states/ListSkeleton'
 import { SectionHeading } from '@/components/ui/SectionHeading'
 import { Sheet } from '@/components/ui/Sheet'
 import { useJobsList } from '@/hooks/useJobs'
@@ -25,7 +26,7 @@ const STATUS: Record<JobStatus, { label: string; cls: string }> = {
 // Run history (T14) over GET /jobs — the same endpoint the extension picker
 // reads. Each row reopens into its /tailor/:id route (Result if it finished).
 export function History() {
-  const { data: jobs, isLoading, isError } = useJobsList()
+  const { data: jobs, isPending, isError, refetch } = useJobsList()
 
   return (
     <div className="mx-auto max-w-4xl space-y-8 px-6 py-16 lg:py-20">
@@ -34,11 +35,11 @@ export function History() {
         tailored PDF.
       </SectionHeading>
 
-      {isLoading && <Loading>loading runs…</Loading>}
+      {isPending && <ListSkeleton />}
       {isError && (
-        <p role="alert" className="font-mono text-sm text-gap-hi">
+        <InlineError onRetry={() => refetch()}>
           Couldn&rsquo;t load your history — is the backend running?
-        </p>
+        </InlineError>
       )}
 
       {jobs && jobs.length === 0 && (

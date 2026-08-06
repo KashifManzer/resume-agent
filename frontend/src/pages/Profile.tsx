@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 
+import { InlineError } from '@/components/states/InlineError'
 import { Button } from '@/components/ui/button'
 import { SectionHeading } from '@/components/ui/SectionHeading'
+import { Skeleton } from '@/components/ui/Skeleton'
 import { useProfile, useUpdateProfile } from '@/hooks/useProfile'
 import type { ProfileIn } from '@/lib/types'
 
@@ -71,8 +73,32 @@ const YES_NO_DECLINE: [string, string][] = [...YES_NO, ['decline', 'Decline to s
 
 // Identity + links (T14 — the résumé library and answer bank are now their own
 // sections). Set up once; every tailored run and the extension read from here.
+// Field-grid loading placeholder, shaped like the form below it (label + input).
+function FormSkeleton() {
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div key={i} className="space-y-1.5">
+            <Skeleton className="h-2.5 w-24" />
+            <Skeleton className="h-11 w-full" />
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="space-y-1.5">
+            <Skeleton className="h-2.5 w-20" />
+            <Skeleton className="h-11 w-full" />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function Profile() {
-  const { data: profile } = useProfile()
+  const { data: profile, isPending, isError, refetch } = useProfile()
   const save = useUpdateProfile()
   const [form, setForm] = useState<ProfileIn>(EMPTY)
 
@@ -118,6 +144,13 @@ export function Profile() {
         .
       </SectionHeading>
 
+      {isPending ? (
+        <FormSkeleton />
+      ) : isError ? (
+        <InlineError onRetry={() => refetch()}>
+          Couldn&rsquo;t load your profile — is the backend running?
+        </InlineError>
+      ) : (
       <section className="space-y-5">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="name" value={form.name ?? ''} onChange={set('name')} placeholder="Ada Lovelace" />
@@ -175,6 +208,7 @@ export function Profile() {
           )}
         </div>
       </section>
+      )}
     </div>
   )
 }

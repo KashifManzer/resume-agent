@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom'
 
 import { Dropzone } from '@/components/Dropzone'
 import { EmptyState } from '@/components/states/EmptyState'
+import { InlineError } from '@/components/states/InlineError'
+import { ListSkeleton } from '@/components/states/ListSkeleton'
 import { Button } from '@/components/ui/button'
 import { SectionHeading } from '@/components/ui/SectionHeading'
 import { Sheet } from '@/components/ui/Sheet'
@@ -16,7 +18,7 @@ import {
 // Résumé library (T14 — split out of the old combined Profile page). Save your
 // .tex sources once; every run picks from them without a re-upload.
 export function Library() {
-  const { data: resumes = [] } = useResumes()
+  const { data: resumes, isPending, isError, refetch } = useResumes()
   const upload = useUploadResume()
   const del = useDeleteResume()
   const setDefault = useSetDefaultResume()
@@ -35,7 +37,13 @@ export function Library() {
         tailor picks the closest to each job — no re-upload, ever.
       </SectionHeading>
 
-      {resumes.length > 0 ? (
+      {isPending ? (
+        <ListSkeleton />
+      ) : isError ? (
+        <InlineError onRetry={() => refetch()}>
+          Couldn&rsquo;t load your library — is the backend running?
+        </InlineError>
+      ) : resumes && resumes.length > 0 ? (
         <Sheet as="ul" sm className="divide-y divide-border overflow-hidden">
           {resumes.map((r) => (
             <li key={r.id} className="flex items-center justify-between gap-3 px-4 py-3">

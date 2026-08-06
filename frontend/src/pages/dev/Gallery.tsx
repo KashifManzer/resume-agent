@@ -1,10 +1,13 @@
 import { EmptyState } from '@/components/states/EmptyState'
 import { ErrorState } from '@/components/states/ErrorState'
+import { InlineError } from '@/components/states/InlineError'
+import { ListSkeleton } from '@/components/states/ListSkeleton'
 import { Loading } from '@/components/states/Loading'
 import { Kicker } from '@/components/ui/Kicker'
 import { Mark } from '@/components/ui/Mark'
 import { SectionHeading } from '@/components/ui/SectionHeading'
 import { Sheet } from '@/components/ui/Sheet'
+import { Skeleton } from '@/components/ui/Skeleton'
 import { Stamp } from '@/components/ui/Stamp'
 
 // Dev-only component gallery (mounted only when import.meta.env.DEV — see App.tsx,
@@ -73,6 +76,21 @@ export default function Gallery() {
 
       <Spec name="Loading">
         <Loading>loading the desk…</Loading>
+      </Spec>
+
+      <Spec name="Skeleton">
+        <div className="max-w-sm space-y-2">
+          <Skeleton className="h-3.5 w-2/3" />
+          <Skeleton className="h-3.5 w-1/2" />
+        </div>
+      </Spec>
+
+      <Spec name="ListSkeleton (paper loading)">
+        <ListSkeleton rows={3} />
+      </Spec>
+
+      <Spec name="InlineError (recoverable)">
+        <InlineError onRetry={() => {}}>Couldn&rsquo;t load this — is the backend running?</InlineError>
       </Spec>
 
       <Spec name="ErrorState">
