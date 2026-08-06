@@ -1,6 +1,9 @@
 import { Link } from 'react-router-dom'
 
-import { PageHeading } from '@/components/PageHeading'
+import { EmptyState } from '@/components/states/EmptyState'
+import { Loading } from '@/components/states/Loading'
+import { SectionHeading } from '@/components/ui/SectionHeading'
+import { Sheet } from '@/components/ui/Sheet'
 import { useJobsList } from '@/hooks/useJobs'
 import type { JobStatus, JobSummary } from '@/lib/types'
 
@@ -26,14 +29,12 @@ export function History() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-8 px-6 py-16 lg:py-20">
-      <PageHeading kicker="set up & track · history" title={<>Past proofs<span className="text-marigold">.</span></>}>
+      <SectionHeading kicker="set up & track · history" title={<>Past proofs<span className="text-marigold">.</span></>}>
         Every run you&rsquo;ve sent to the press. Reopen one to view its proof, scores and the
         tailored PDF.
-      </PageHeading>
+      </SectionHeading>
 
-      {isLoading && (
-        <p className="font-mono text-sm tracking-[0.2em] text-cream-soft uppercase">loading runs…</p>
-      )}
+      {isLoading && <Loading>loading runs…</Loading>}
       {isError && (
         <p role="alert" className="font-mono text-sm text-gap-hi">
           Couldn&rsquo;t load your history — is the backend running?
@@ -41,23 +42,20 @@ export function History() {
       )}
 
       {jobs && jobs.length === 0 && (
-        <div className="sheet-sm border-l-[3px] border-l-marigold px-5 py-4 text-ink">
-          <p className="font-serif text-lg">Nothing filed yet.</p>
-          <p className="mt-1 text-sm text-ink-soft">
-            <Link to="/" className="text-accent underline-offset-2 hover:underline">
-              Tailor your first résumé
-            </Link>{' '}
-            and it&rsquo;ll land here.
-          </p>
-        </div>
+        <EmptyState title="Nothing filed yet.">
+          <Link to="/" className="text-accent underline-offset-2 hover:underline">
+            Tailor your first résumé
+          </Link>{' '}
+          and it&rsquo;ll land here.
+        </EmptyState>
       )}
 
       {jobs && jobs.length > 0 && (
-        <ul className="sheet-sm divide-y divide-border overflow-hidden">
+        <Sheet as="ul" sm className="divide-y divide-border overflow-hidden">
           {jobs.map((j) => (
             <Row key={j.id} job={j} />
           ))}
-        </ul>
+        </Sheet>
       )}
     </div>
   )

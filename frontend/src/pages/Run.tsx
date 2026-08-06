@@ -1,22 +1,21 @@
 import { motion } from 'motion/react'
 
+import { ErrorState } from '@/components/states/ErrorState'
 import { StepProgress } from '@/components/StepProgress'
+import { Kicker } from '@/components/ui/Kicker'
+import { Sheet } from '@/components/ui/Sheet'
 import type { Job } from '@/lib/types'
 
 export function Run({ job, onStartOver }: { job: Job; onStartOver: () => void }) {
   if (job.status === 'error') {
     return (
-      <div className="mx-auto max-w-2xl px-6 py-28 text-center">
-        <p className="font-mono text-xs tracking-[0.34em] text-gap-hi uppercase">the press jammed</p>
-        <h2 className="mt-4 font-serif text-5xl text-cream">Something went wrong</h2>
-        <p className="mx-auto mt-4 max-w-md font-mono text-sm text-cream-soft">{job.error}</p>
-        <button
-          onClick={onStartOver}
-          className="mt-9 h-12 rounded-md border border-cream/25 px-7 font-mono text-sm tracking-[0.2em] text-cream uppercase transition hover:bg-cream/10 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-        >
-          Start over
-        </button>
-      </div>
+      <ErrorState
+        kicker="the press jammed"
+        title="Something went wrong"
+        action={{ label: 'Start over', onClick: onStartOver }}
+      >
+        {job.error}
+      </ErrorState>
     )
   }
 
@@ -31,9 +30,9 @@ export function Run({ job, onStartOver }: { job: Job; onStartOver: () => void })
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-marigold opacity-70" />
           <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-marigold" />
         </span>
-        <p className="font-mono text-xs tracking-[0.34em] text-marigold uppercase">
+        <Kicker>
           {job.round > 0 ? `revision ${job.round} · marking` : 'marking up the proof'}
-        </p>
+        </Kicker>
       </div>
 
       <h2 className="mt-5 font-serif text-6xl leading-[0.95] tracking-[-0.02em] text-cream lg:text-7xl">
@@ -44,7 +43,7 @@ export function Run({ job, onStartOver }: { job: Job; onStartOver: () => void })
         running while the press marks the proof.
       </p>
 
-      <div className="sheet mt-12 p-8 lg:p-10">
+      <Sheet className="mt-12 p-8 lg:p-10">
         <div className="mb-6 flex items-baseline justify-between border-b border-paper-line pb-4">
           <span className="font-mono text-[11px] tracking-[0.28em] text-ink-soft uppercase">
             proof marks
@@ -52,7 +51,7 @@ export function Run({ job, onStartOver }: { job: Job; onStartOver: () => void })
           <span className="font-mono text-[11px] tracking-[0.28em] text-accent uppercase">live</span>
         </div>
         <StepProgress progress={job.progress} status={job.status} />
-      </div>
+      </Sheet>
 
       <button
         onClick={onStartOver}

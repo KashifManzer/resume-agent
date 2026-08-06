@@ -5,6 +5,10 @@ import { HiringAgentCard } from '@/components/HiringAgentCard'
 import { KeywordMarks } from '@/components/KeywordMarks'
 import { ScoreReveal } from '@/components/ScoreReveal'
 import { Button } from '@/components/ui/button'
+import { Kicker } from '@/components/ui/Kicker'
+import { Mark } from '@/components/ui/Mark'
+import { Sheet } from '@/components/ui/Sheet'
+import { Stamp } from '@/components/ui/Stamp'
 import { downloadTex, pdfUrl } from '@/lib/api'
 import type { PipelineResult } from '@/lib/types'
 
@@ -37,9 +41,7 @@ export function Result({
     >
       <motion.header variants={section} className="mb-10 flex items-end justify-between gap-6">
         <div>
-          <p className="font-mono text-xs tracking-[0.34em] text-marigold uppercase">
-            proof approved
-          </p>
+          <Kicker>proof approved</Kicker>
           <h1 className="mt-3 font-serif text-5xl leading-[0.95] tracking-[-0.02em] text-cream sm:text-6xl lg:text-7xl">
             Your tailored résumé
           </h1>
@@ -53,34 +55,30 @@ export function Result({
       </motion.header>
 
       {report.selection_warning && (
-        <motion.div
+        <Sheet
+          as={motion.div}
+          sm
           variants={section}
           role="alert"
-          className="sheet-sm mb-10 border-l-[3px] border-l-gap px-5 py-3.5 text-ink"
+          className="mb-10 border-l-[3px] border-l-gap px-5 py-3.5 text-ink"
         >
           <span className="font-mono text-xs tracking-[0.2em] text-gap uppercase">note · </span>
           {report.selection_warning}
-        </motion.div>
+        </Sheet>
       )}
 
       <div className="grid grid-cols-1 gap-10 lg:grid-cols-[1.12fr_0.88fr]">
         {/* Left: the proofed page itself — a physical sheet on the desk, stamped. */}
         <motion.div variants={section} className="lg:sticky lg:top-8 lg:self-start">
           <div className="relative">
-            <div className="stamp stamp-in absolute -top-6 -right-5 z-10 text-[0.72rem] leading-tight tracking-[0.16em]">
-              <span>Proof</span>
-              <span>Approved</span>
-              <span className="mt-0.5 text-[0.5rem] tracking-[0.14em] opacity-80">
-                one page · {new Date().getFullYear()}
-              </span>
-            </div>
-            <div className="sheet overflow-hidden p-2.5">
+            <Stamp className="absolute -top-6 -right-5 z-10" sub={<>one page · {new Date().getFullYear()}</>} />
+            <Sheet className="overflow-hidden p-2.5">
               <iframe
                 title="Tailored résumé (PDF)"
                 src={`${pdfUrl(jobId)}?r=${round}`}
                 className="h-[80vh] w-full rounded-sm bg-white"
               />
-            </div>
+            </Sheet>
           </div>
           <div className="mt-5 flex gap-3">
             <a
@@ -136,16 +134,13 @@ export function Result({
             <ScoreReveal before={report.ats_before.overall} after={report.ats_after.overall} />
           </motion.div>
 
-          <motion.section variants={section} className="sheet p-7">
+          <Sheet as={motion.section} variants={section} className="p-7">
             <h2 className="mb-5 font-serif text-2xl text-ink">Keyword coverage</h2>
             <KeywordMarks matched={report.ats_after.matched} missing={report.ats_after.missing} />
-          </motion.section>
+          </Sheet>
 
           {report.added.length > 0 && (
-            <motion.section
-              variants={section}
-              className="sheet border-l-[3px] border-l-marigold p-7"
-            >
+            <Sheet as={motion.section} variants={section} className="border-l-[3px] border-l-marigold p-7">
               <h2 className="font-serif text-2xl text-ink">Added — review these</h2>
               <p className="mt-1.5 mb-4 text-sm leading-relaxed text-ink-soft">
                 We wrote these in to hit the match. They&rsquo;re now claims on your résumé &mdash;
@@ -153,16 +148,14 @@ export function Result({
               </p>
               <div className="flex flex-wrap gap-x-1.5 gap-y-2.5 text-lg">
                 {report.added.map((a) => (
-                  <span key={a} className="mark-hl">
-                    {a}
-                  </span>
+                  <Mark key={a}>{a}</Mark>
                 ))}
               </div>
-            </motion.section>
+            </Sheet>
           )}
 
           {report.changes.length > 0 && (
-            <motion.section variants={section} className="sheet p-7">
+            <Sheet as={motion.section} variants={section} className="p-7">
               <h2 className="mb-4 font-serif text-2xl text-ink">What changed</h2>
               <ul className="space-y-3">
                 {report.changes.map((c, i) => (
@@ -174,7 +167,7 @@ export function Result({
                   </li>
                 ))}
               </ul>
-            </motion.section>
+            </Sheet>
           )}
 
           {report.hiring_agent && (

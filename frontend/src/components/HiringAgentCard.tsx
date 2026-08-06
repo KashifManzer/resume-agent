@@ -1,3 +1,4 @@
+import { Sheet } from '@/components/ui/Sheet'
 import type { HiringAgentReport } from '@/lib/types'
 
 const CATEGORY_MAX: Record<string, number> = {
@@ -11,7 +12,7 @@ const label = (k: string) => k.replace(/_/g, ' ')
 
 export function HiringAgentCard({ report }: { report: HiringAgentReport }) {
   return (
-    <section className="sheet p-7">
+    <Sheet as="section" className="p-7">
       <header className="flex items-baseline justify-between">
         <h3 className="font-serif text-2xl text-ink">Quality gate</h3>
         <div className="font-mono text-3xl font-medium text-ink tabular-nums">
@@ -63,6 +64,6 @@ export function HiringAgentCard({ report }: { report: HiringAgentReport }) {
           </ul>
         </div>
       )}
-    </section>
+    </Sheet>
   )
 }

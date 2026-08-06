@@ -1,12 +1,13 @@
 import { motion } from 'motion/react'
 
+import { Sheet } from '@/components/ui/Sheet'
 import { CountUp } from './CountUp'
 
 /** The signature moment: JD-fit before → after, delta animated, on a lit sheet. */
 export function ScoreReveal({ before, after }: { before: number; after: number }) {
   const delta = after - before
   return (
-    <div className="sheet relative overflow-hidden p-8">
+    <Sheet className="relative overflow-hidden p-8">
       <div className="flex items-center justify-between">
         <span className="font-mono text-[11px] tracking-[0.28em] text-ink-soft uppercase">
           JD-fit / ATS
@@ -60,6 +61,6 @@ export function ScoreReveal({ before, after }: { before: number; after: number }
           className="h-full rounded-full bg-marigold"
         />
       </div>
-    </div>
+    </Sheet>
   )
 }

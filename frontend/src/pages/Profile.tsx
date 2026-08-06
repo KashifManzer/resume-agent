@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 
-import { PageHeading } from '@/components/PageHeading'
 import { Button } from '@/components/ui/button'
+import { SectionHeading } from '@/components/ui/SectionHeading'
 import { useProfile, useUpdateProfile } from '@/hooks/useProfile'
 import type { ProfileIn } from '@/lib/types'
 
@@ -109,14 +109,14 @@ export function Profile() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-10 px-6 py-16 lg:py-20">
-      <PageHeading kicker="set up & track · profile" title={<>Your details<span className="text-marigold">.</span></>}>
+      <SectionHeading kicker="set up & track · profile" title={<>Your details<span className="text-marigold">.</span></>}>
         Identity &amp; links live here — reused on every tailored run and by the autofill extension.
         Your résumés live in the{' '}
         <Link to="/library" className="text-marigold underline-offset-2 hover:underline">
           library
         </Link>
         .
-      </PageHeading>
+      </SectionHeading>
 
       <section className="space-y-5">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

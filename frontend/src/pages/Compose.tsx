@@ -4,6 +4,8 @@ import { motion } from 'motion/react'
 
 import { Dropzone } from '@/components/Dropzone'
 import { Button } from '@/components/ui/button'
+import { Kicker } from '@/components/ui/Kicker'
+import { Sheet } from '@/components/ui/Sheet'
 import { Textarea } from '@/components/ui/textarea'
 import { useCreateJob, useJdFromUrl } from '@/hooks/useJobs'
 import { useResumes } from '@/hooks/useProfile'
@@ -80,9 +82,7 @@ export function Compose() {
       className="mx-auto grid max-w-6xl grid-cols-1 gap-x-14 gap-y-12 px-6 py-16 lg:grid-cols-[1.1fr_0.9fr] lg:py-24"
     >
       <motion.header variants={rise} className="lg:col-span-2">
-        <p className="font-mono text-xs tracking-[0.34em] text-marigold uppercase">
-          the proofing desk
-        </p>
+        <Kicker>the proofing desk</Kicker>
         <h1 className="mt-4 max-w-3xl font-serif text-6xl leading-[0.9] font-medium tracking-[-0.02em] text-cream sm:text-7xl lg:text-8xl">
           Set the brief<span className="text-marigold">.</span>
         </h1>
@@ -136,7 +136,7 @@ export function Compose() {
         </div>
 
         {/* the brief, laid on a proofing sheet with a red margin rule */}
-        <div className="sheet relative overflow-hidden">
+        <Sheet className="relative overflow-hidden">
           <div aria-hidden className="pointer-events-none absolute inset-y-0 left-11 w-px bg-gap/30" />
           <Textarea
             id="jd"
@@ -145,7 +145,7 @@ export function Compose() {
             placeholder="Paste the full job description…"
             className="min-h-[24rem] resize-y border-0 bg-transparent py-5 pr-5 pl-16 text-base leading-relaxed text-ink shadow-none placeholder:text-ink-soft/60 focus-visible:ring-0"
           />
-        </div>
+        </Sheet>
       </motion.div>
 
       <motion.div variants={rise} className="flex flex-col gap-5">
@@ -154,7 +154,7 @@ export function Compose() {
         {/* pick from the saved library (default pre-checked) — no forced re-upload */}
         {resumes.length > 0 && (
           <div className="space-y-2">
-            <ul className="sheet-sm divide-y divide-border overflow-hidden">
+            <Sheet as="ul" sm className="divide-y divide-border overflow-hidden">
               {resumes.map((r) => (
                 <li key={r.id}>
                   <label className="flex cursor-pointer items-center gap-3 px-4 py-2.5">
@@ -173,7 +173,7 @@ export function Compose() {
                   </label>
                 </li>
               ))}
-            </ul>
+            </Sheet>
             <p className="font-mono text-[11px] text-cream-soft">
               from your library — or upload a fresh one below (an upload takes precedence).
             </p>

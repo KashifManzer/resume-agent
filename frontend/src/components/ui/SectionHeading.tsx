@@ -1,6 +1,9 @@
-// Shared masthead for the "set up & track" sections (T14) — keeps Library,
-// Profile, Answers and History speaking the same proofing-desk voice.
-export function PageHeading({
+import { Kicker } from './Kicker'
+
+// Shared masthead for the "set up & track" sections — keeps Library, Profile,
+// Answers and History speaking the same proofing-desk voice. (Folds in the old
+// PageHeading: same markup, now built on the Kicker primitive.)
+export function SectionHeading({
   kicker,
   title,
   children,
@@ -11,7 +14,7 @@ export function PageHeading({
 }) {
   return (
     <header className="space-y-3">
-      <p className="font-mono text-xs tracking-[0.34em] text-marigold uppercase">{kicker}</p>
+      <Kicker>{kicker}</Kicker>
       <h1 className="font-serif text-5xl font-medium tracking-[-0.02em] text-cream sm:text-6xl">
         {title}
       </h1>

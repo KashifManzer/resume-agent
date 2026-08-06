@@ -1,3 +1,5 @@
+import { Mark } from '@/components/ui/Mark'
+
 export function KeywordMarks({ matched, missing }: { matched: string[]; missing: string[] }) {
   return (
     <div className="space-y-5">
@@ -8,9 +10,9 @@ export function KeywordMarks({ matched, missing }: { matched: string[]; missing:
         <div className="flex flex-wrap gap-x-1.5 gap-y-2.5 text-lg leading-relaxed">
           {matched.length === 0 && <span className="text-sm text-ink-soft">—</span>}
           {matched.map((k, i) => (
-            <span key={k} className="mark-hl" style={{ animationDelay: `${0.5 + i * 0.05}s` }}>
+            <Mark key={k} style={{ animationDelay: `${0.5 + i * 0.05}s` }}>
               {k}
-            </span>
+            </Mark>
           ))}
         </div>
       </div>
@@ -22,9 +24,9 @@ export function KeywordMarks({ matched, missing }: { matched: string[]; missing:
           </div>
           <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-lg">
             {missing.map((k) => (
-              <span key={k} className="mark-gap">
+              <Mark key={k} kind="gap">
                 {k}
-              </span>
+              </Mark>
             ))}
           </div>
         </div>

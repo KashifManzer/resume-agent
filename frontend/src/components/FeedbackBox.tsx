@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Sheet } from '@/components/ui/Sheet'
 import { Textarea } from '@/components/ui/textarea'
 import { useFeedback } from '@/hooks/useJobs'
 import { OUTER_LOOP_MAX } from '@/lib/types'
@@ -12,7 +13,7 @@ export function FeedbackBox({ jobId, round }: { jobId: string; round: number }) 
   const atCap = left <= 0
 
   return (
-    <section className="sheet p-7">
+    <Sheet as="section" className="p-7">
       <header className="flex items-baseline justify-between">
         <h3 className="font-serif text-2xl text-ink">Ask for a revision</h3>
         <span className="font-mono text-[11px] tracking-[0.15em] text-ink-soft uppercase">
@@ -50,6 +51,6 @@ export function FeedbackBox({ jobId, round }: { jobId: string; round: number }) 
           </Button>
         </>
       )}
-    </section>
+    </Sheet>
   )
 }

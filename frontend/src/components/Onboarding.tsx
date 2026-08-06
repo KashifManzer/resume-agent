@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
+import { Sheet } from '@/components/ui/Sheet'
 import { useExtensionInstalled } from '@/hooks/useExtension'
 import { useJobsList } from '@/hooks/useJobs'
 import { useProfile, useResumes } from '@/hooks/useProfile'
@@ -88,7 +89,7 @@ export function Onboarding() {
       aria-label="Setup checklist"
       className="mx-auto mt-8 max-w-6xl px-6"
     >
-      <div className="sheet relative overflow-hidden p-6 lg:p-8">
+      <Sheet className="relative overflow-hidden p-6 lg:p-8">
         <div aria-hidden className="pointer-events-none absolute inset-y-0 left-0 w-[3px] bg-marigold" />
         <div className="mb-5 flex items-baseline justify-between gap-4">
           <div>
@@ -134,7 +135,7 @@ export function Onboarding() {
             </li>
           ))}
         </ol>
-      </div>
+      </Sheet>
     </section>
   )
 }

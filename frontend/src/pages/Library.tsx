@@ -2,8 +2,10 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { Dropzone } from '@/components/Dropzone'
-import { PageHeading } from '@/components/PageHeading'
+import { EmptyState } from '@/components/states/EmptyState'
 import { Button } from '@/components/ui/button'
+import { SectionHeading } from '@/components/ui/SectionHeading'
+import { Sheet } from '@/components/ui/Sheet'
 import {
   useDeleteResume,
   useResumes,
@@ -28,13 +30,13 @@ export function Library() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-10 px-6 py-16 lg:py-20">
-      <PageHeading kicker="set up & track · résumé library" title={<>Your sources<span className="text-marigold">.</span></>}>
+      <SectionHeading kicker="set up & track · résumé library" title={<>Your sources<span className="text-marigold">.</span></>}>
         Lay your <code className="font-mono text-cream">.tex</code> résumés on the desk once. The
         tailor picks the closest to each job — no re-upload, ever.
-      </PageHeading>
+      </SectionHeading>
 
       {resumes.length > 0 ? (
-        <ul className="sheet-sm divide-y divide-border overflow-hidden">
+        <Sheet as="ul" sm className="divide-y divide-border overflow-hidden">
           {resumes.map((r) => (
             <li key={r.id} className="flex items-center justify-between gap-3 px-4 py-3">
               <span className="flex min-w-0 items-center gap-3">
@@ -65,18 +67,15 @@ export function Library() {
               </span>
             </li>
           ))}
-        </ul>
+        </Sheet>
       ) : (
-        <div className="sheet-sm border-l-[3px] border-l-marigold px-5 py-4 text-ink">
-          <p className="font-serif text-lg">An empty desk.</p>
-          <p className="mt-1 text-sm text-ink-soft">
-            Add your first <code className="font-mono text-accent">.tex</code> résumé below — then{' '}
-            <Link to="/" className="text-accent underline-offset-2 hover:underline">
-              tailor it to a job
-            </Link>
-            .
-          </p>
-        </div>
+        <EmptyState title="An empty desk.">
+          Add your first <code className="font-mono text-accent">.tex</code> résumé below — then{' '}
+          <Link to="/" className="text-accent underline-offset-2 hover:underline">
+            tailor it to a job
+          </Link>
+          .
+        </EmptyState>
       )}
 
       <Dropzone
