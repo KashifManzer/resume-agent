@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { animate, useReducedMotion } from 'motion/react'
 
+import { EASE } from '@/lib/motion'
+
 export function CountUp({
   to,
   from = 0,
@@ -21,7 +23,7 @@ export function CountUp({
     const controls = animate(from, to, {
       duration,
       delay,
-      ease: [0.16, 1, 0.3, 1],
+      ease: EASE,
       onUpdate: (v) => setN(Math.round(v)),
     })
     return () => controls.stop()

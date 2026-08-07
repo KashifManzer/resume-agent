@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { motion } from 'motion/react'
 import { Link } from 'react-router-dom'
 
 import { InlineError } from '@/components/states/InlineError'
@@ -6,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { SectionHeading } from '@/components/ui/SectionHeading'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { useProfile, useUpdateProfile } from '@/hooks/useProfile'
+import { rise, stagger, useEntrance } from '@/lib/motion'
 import type { ProfileIn } from '@/lib/types'
 
 const EMPTY: ProfileIn = {
@@ -101,6 +103,7 @@ export function Profile() {
   const { data: profile, isPending, isError, refetch } = useProfile()
   const save = useUpdateProfile()
   const [form, setForm] = useState<ProfileIn>(EMPTY)
+  const entrance = useEntrance()
 
   // hydrate the form once the profile loads (null fields → empty strings)
   useEffect(() => {
@@ -134,16 +137,23 @@ export function Profile() {
     setForm((f) => ({ ...f, links: { ...f.links, [k]: e.target.value } }))
 
   return (
-    <div className="mx-auto max-w-4xl space-y-10 px-6 py-16 lg:py-20">
-      <SectionHeading kicker="set up & track · profile" title={<>Your details<span className="text-marigold">.</span></>}>
-        Identity &amp; links live here — reused on every tailored run and by the autofill extension.
-        Your résumés live in the{' '}
-        <Link to="/library" className="text-marigold underline-offset-2 hover:underline">
-          library
-        </Link>
-        .
-      </SectionHeading>
+    <motion.div
+      variants={stagger}
+      {...entrance}
+      className="mx-auto max-w-4xl space-y-10 px-6 py-16 lg:py-20"
+    >
+      <motion.div variants={rise}>
+        <SectionHeading kicker="set up & track · profile" title={<>Your details<span className="text-marigold">.</span></>}>
+          Identity &amp; links live here — reused on every tailored run and by the autofill extension.
+          Your résumés live in the{' '}
+          <Link to="/library" className="text-marigold underline-offset-2 hover:underline">
+            library
+          </Link>
+          .
+        </SectionHeading>
+      </motion.div>
 
+      <motion.div variants={rise}>
       {isPending ? (
         <FormSkeleton />
       ) : isError ? (
@@ -209,6 +219,7 @@ export function Profile() {
         </div>
       </section>
       )}
-    </div>
+      </motion.div>
+    </motion.div>
   )
 }

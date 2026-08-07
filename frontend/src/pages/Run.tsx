@@ -23,6 +23,7 @@ export function Run({ job, onStartOver }: { job: Job; onStartOver: () => void })
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
+      exit={{ opacity: 0, transition: { duration: 0.25 } }}
       className="mx-auto max-w-3xl px-6 py-20 lg:py-28"
     >
       <div className="flex items-center gap-3">

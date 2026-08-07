@@ -1,3 +1,4 @@
+import { AnimatePresence, useReducedMotion } from 'motion/react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import { ErrorState } from '@/components/states/ErrorState'
@@ -14,6 +15,7 @@ export function Tailor() {
   const navigate = useNavigate()
   const { data: job, isError } = useJob(jobId ?? null)
   const startOver = () => navigate('/')
+  const reduced = useReducedMotion()
 
   if (!jobId || isError) {
     return (
@@ -35,16 +37,22 @@ export function Tailor() {
     )
   }
 
-  if (job.status === 'done' && job.result) {
-    return (
+  const view =
+    job.status === 'done' && job.result ? (
       <Result
+        key="result"
         jobId={job.id}
         round={job.round}
         result={job.result}
         applyUrl={job.apply_url}
         onStartOver={startOver}
       />
+    ) : (
+      <Run key="run" job={job} onStartOver={startOver} />
     )
-  }
-  return <Run job={job} onStartOver={startOver} />
+
+  // Run → Result reveal: the progress view fades out and the proof reveals in
+  // (its own sections then stagger onto the desk). Same route, so this — not the
+  // AppShell page transition — owns the moment. Reduced motion: swap instantly.
+  return reduced ? view : <AnimatePresence mode="wait">{view}</AnimatePresence>
 }

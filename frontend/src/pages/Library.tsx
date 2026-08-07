@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { motion } from 'motion/react'
 import { Link } from 'react-router-dom'
 
 import { Dropzone } from '@/components/Dropzone'
@@ -14,6 +15,7 @@ import {
   useSetDefaultResume,
   useUploadResume,
 } from '@/hooks/useProfile'
+import { rise, stagger, useEntrance } from '@/lib/motion'
 
 // Résumé library (T14 — split out of the old combined Profile page). Save your
 // .tex sources once; every run picks from them without a re-upload.
@@ -23,6 +25,7 @@ export function Library() {
   const del = useDeleteResume()
   const setDefault = useSetDefaultResume()
   const [staged, setStaged] = useState<File[]>([])
+  const entrance = useEntrance()
 
   async function addResumes() {
     if (!staged.length) return
@@ -31,12 +34,19 @@ export function Library() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-10 px-6 py-16 lg:py-20">
-      <SectionHeading kicker="set up & track · résumé library" title={<>Your sources<span className="text-marigold">.</span></>}>
-        Lay your <code className="font-mono text-cream">.tex</code> résumés on the desk once. The
-        tailor picks the closest to each job — no re-upload, ever.
-      </SectionHeading>
+    <motion.div
+      variants={stagger}
+      {...entrance}
+      className="mx-auto max-w-4xl space-y-10 px-6 py-16 lg:py-20"
+    >
+      <motion.div variants={rise}>
+        <SectionHeading kicker="set up & track · résumé library" title={<>Your sources<span className="text-marigold">.</span></>}>
+          Lay your <code className="font-mono text-cream">.tex</code> résumés on the desk once. The
+          tailor picks the closest to each job — no re-upload, ever.
+        </SectionHeading>
+      </motion.div>
 
+      <motion.div variants={rise}>
       {isPending ? (
         <ListSkeleton />
       ) : isError ? (
@@ -85,19 +95,22 @@ export function Library() {
           .
         </EmptyState>
       )}
+      </motion.div>
 
-      <Dropzone
-        files={staged}
-        onChange={setStaged}
-        title="Add résumés to your library"
-        hint={
-          <>
-            Drop one or more <code className="font-mono text-accent">.tex</code> files — reuse them
-            on any run, no re-upload.
-          </>
-        }
-      />
-      <div className="flex items-center gap-4">
+      <motion.div variants={rise}>
+        <Dropzone
+          files={staged}
+          onChange={setStaged}
+          title="Add résumés to your library"
+          hint={
+            <>
+              Drop one or more <code className="font-mono text-accent">.tex</code> files — reuse them
+              on any run, no re-upload.
+            </>
+          }
+        />
+      </motion.div>
+      <motion.div variants={rise} className="flex items-center gap-4">
         <Button
           onClick={addResumes}
           disabled={!staged.length || upload.isPending}
@@ -110,7 +123,7 @@ export function Library() {
             {(upload.error as Error).message}
           </p>
         )}
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   )
 }

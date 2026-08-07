@@ -1,6 +1,7 @@
 import { motion } from 'motion/react'
 
 import { Sheet } from '@/components/ui/Sheet'
+import { EASE } from '@/lib/motion'
 import { CountUp } from './CountUp'
 
 /** The signature moment: JD-fit before → after, delta animated, on a lit sheet. */
@@ -57,7 +58,7 @@ export function ScoreReveal({ before, after }: { before: number; after: number }
         <motion.div
           initial={{ width: `${before}%` }}
           animate={{ width: `${after}%` }}
-          transition={{ delay: 0.4, duration: 1.1, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ delay: 0.4, duration: 1.1, ease: EASE }}
           className="h-full rounded-full bg-marigold"
         />
       </div>

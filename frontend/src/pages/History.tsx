@@ -1,3 +1,4 @@
+import { motion } from 'motion/react'
 import { Link } from 'react-router-dom'
 
 import { EmptyState } from '@/components/states/EmptyState'
@@ -6,6 +7,7 @@ import { ListSkeleton } from '@/components/states/ListSkeleton'
 import { SectionHeading } from '@/components/ui/SectionHeading'
 import { Sheet } from '@/components/ui/Sheet'
 import { useJobsList } from '@/hooks/useJobs'
+import { rise, stagger, useEntrance } from '@/lib/motion'
 import type { JobStatus, JobSummary } from '@/lib/types'
 
 function timeAgo(iso: string): string {
@@ -27,38 +29,47 @@ const STATUS: Record<JobStatus, { label: string; cls: string }> = {
 // reads. Each row reopens into its /tailor/:id route (Result if it finished).
 export function History() {
   const { data: jobs, isPending, isError, refetch } = useJobsList()
+  const entrance = useEntrance()
 
   return (
-    <div className="mx-auto max-w-4xl space-y-8 px-6 py-16 lg:py-20">
-      <SectionHeading kicker="set up & track · history" title={<>Past proofs<span className="text-marigold">.</span></>}>
-        Every run you&rsquo;ve sent to the press. Reopen one to view its proof, scores and the
-        tailored PDF.
-      </SectionHeading>
+    <motion.div
+      variants={stagger}
+      {...entrance}
+      className="mx-auto max-w-4xl space-y-8 px-6 py-16 lg:py-20"
+    >
+      <motion.div variants={rise}>
+        <SectionHeading kicker="set up & track · history" title={<>Past proofs<span className="text-marigold">.</span></>}>
+          Every run you&rsquo;ve sent to the press. Reopen one to view its proof, scores and the
+          tailored PDF.
+        </SectionHeading>
+      </motion.div>
 
-      {isPending && <ListSkeleton />}
-      {isError && (
-        <InlineError onRetry={() => refetch()}>
-          Couldn&rsquo;t load your history — is the backend running?
-        </InlineError>
-      )}
+      <motion.div variants={rise}>
+        {isPending && <ListSkeleton />}
+        {isError && (
+          <InlineError onRetry={() => refetch()}>
+            Couldn&rsquo;t load your history — is the backend running?
+          </InlineError>
+        )}
 
-      {jobs && jobs.length === 0 && (
-        <EmptyState title="Nothing filed yet.">
-          <Link to="/" className="text-accent underline-offset-2 hover:underline">
-            Tailor your first résumé
-          </Link>{' '}
-          and it&rsquo;ll land here.
-        </EmptyState>
-      )}
+        {jobs && jobs.length === 0 && (
+          <EmptyState title="Nothing filed yet.">
+            <Link to="/" className="text-accent underline-offset-2 hover:underline">
+              Tailor your first résumé
+            </Link>{' '}
+            and it&rsquo;ll land here.
+          </EmptyState>
+        )}
 
-      {jobs && jobs.length > 0 && (
-        <Sheet as="ul" sm className="divide-y divide-border overflow-hidden">
-          {jobs.map((j) => (
-            <Row key={j.id} job={j} />
-          ))}
-        </Sheet>
-      )}
-    </div>
+        {jobs && jobs.length > 0 && (
+          <Sheet as="ul" sm className="divide-y divide-border overflow-hidden">
+            {jobs.map((j) => (
+              <Row key={j.id} job={j} />
+            ))}
+          </Sheet>
+        )}
+      </motion.div>
+    </motion.div>
   )
 }
 

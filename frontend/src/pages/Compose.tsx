@@ -10,15 +10,7 @@ import { Sheet } from '@/components/ui/Sheet'
 import { Textarea } from '@/components/ui/textarea'
 import { useCreateJob, useJdFromUrl } from '@/hooks/useJobs'
 import { useResumes } from '@/hooks/useProfile'
-
-const stagger = {
-  hidden: {},
-  show: { transition: { staggerChildren: 0.09, delayChildren: 0.05 } },
-}
-const rise = {
-  hidden: { opacity: 0, y: 16 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.6, ease: [0.16, 1, 0.3, 1] as const } },
-}
+import { rise, stagger, useEntrance } from '@/lib/motion'
 
 function Eyebrow({ n, children }: { n: string; children: React.ReactNode }) {
   return (
@@ -86,6 +78,7 @@ export function Compose() {
   const create = useCreateJob()
   const jdFetch = useJdFromUrl()
   const { data: resumes = [], isPending: resumesLoading } = useResumes()
+  const entrance = useEntrance()
 
   // pre-check the default library résumé once, without clobbering user edits
   useEffect(() => {
@@ -126,8 +119,7 @@ export function Compose() {
   return (
     <motion.div
       variants={stagger}
-      initial="hidden"
-      animate="show"
+      {...entrance}
       className="mx-auto grid max-w-6xl grid-cols-1 gap-x-14 gap-y-12 px-6 py-16 lg:grid-cols-[1.1fr_0.9fr] lg:py-24"
     >
       <motion.header variants={rise} className="lg:col-span-2">

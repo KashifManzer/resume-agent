@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from 'motion/react'
 
+import { EASE } from '@/lib/motion'
 import type { JobStatus } from '@/lib/types'
 
 export function StepProgress({
@@ -21,7 +22,7 @@ export function StepProgress({
               key={`${i}-${step}`}
               initial={{ opacity: 0, x: -10 }}
               animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+              transition={{ duration: 0.4, ease: EASE }}
               className="flex items-center gap-4 py-3.5 first:pt-0 last:pb-0"
             >
               <span className="w-4 shrink-0 text-center font-mono text-xs text-ink-soft/70 tabular-nums">

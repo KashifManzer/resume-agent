@@ -1,6 +1,8 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
+import { NavLink, useLocation, useOutlet } from 'react-router-dom'
 
 import { useExtensionInstalled } from '@/hooks/useExtension'
+import { pageFade } from '@/lib/motion'
 
 // The desk organizer's index tabs (T14). Two zones — "do" (Tailor) and "set up
 // & track" (the rest) — read as lettered dividers in a card index. NavLink sets
@@ -46,6 +48,13 @@ function ExtensionPill() {
 }
 
 export function AppShell() {
+  // Route transition: a quick crossfade between pages, keyed on the path. The
+  // Run→Result reveal lives in Tailor (same path, so this doesn't fire there).
+  // Reduced motion: render the outlet plainly (instant swap) — the crossfade
+  // relies on an opacity animation that motion leaves stuck at 0 when reduced.
+  const location = useLocation()
+  const outlet = useOutlet()
+  const reduced = useReducedMotion()
   return (
     <div className="min-h-svh overflow-x-clip">
       <header className="relative">
@@ -81,7 +90,17 @@ export function AppShell() {
       </header>
 
       <main>
-        <Outlet />
+        {reduced ? (
+          outlet
+        ) : (
+          // initial={false}: no entrance on first load (content is immediate on a
+          // cold/direct-URL load) — only client-side navigations crossfade.
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div key={location.pathname} variants={pageFade} initial="hidden" animate="show" exit="exit">
+              {outlet}
+            </motion.div>
+          </AnimatePresence>
+        )}
       </main>
     </div>
   )
