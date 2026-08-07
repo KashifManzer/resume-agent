@@ -4,10 +4,10 @@ import { Sheet } from '@/components/ui/Sheet'
 // honest text plus a Retry that re-runs the query. Sits under a SectionHeading so
 // the masthead survives (unlike the full-page ErrorState).
 export function InlineError({
-  children = 'Something went wrong loading this.',
+  children,
   onRetry,
 }: {
-  children?: React.ReactNode
+  children: React.ReactNode
   onRetry?: () => void
 }) {
   return (

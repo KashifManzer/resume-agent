@@ -3,10 +3,10 @@ import { cn } from '@/lib/utils'
 // A mono "loading…" line on the desk.
 // ponytail: the single seam P2 swaps for paper skeletons — swap here, not per page.
 export function Loading({
-  children = 'loading…',
+  children,
   className,
 }: {
-  children?: React.ReactNode
+  children: React.ReactNode
   className?: string
 }) {
   return (
