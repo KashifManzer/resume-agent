@@ -1,6 +1,13 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Load backend/.env (if present) so a locally-stored OLLAMA_API_KEY and friends
+# are picked up without exporting them by hand. Real environment variables win
+# (override defaults to False), so a deploy's injected env still takes precedence.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+
 # Persistence (T11). Structure in SQLite; résumé bytes on disk under DATA_DIR.
 # ponytail: SQLite is single-writer — flip DATABASE_URL to Postgres at scale
 # (SQLAlchemy makes it a URL change, not a rewrite).
