@@ -54,5 +54,7 @@ export function Tailor() {
   // Run → Result reveal: the progress view fades out and the proof reveals in
   // (its own sections then stagger onto the desk). Same route, so this — not the
   // AppShell page transition — owns the moment. Reduced motion: swap instantly.
-  return reduced ? view : <AnimatePresence mode="wait">{view}</AnimatePresence>
+  // initial={false}: a cold reload straight onto a finished /tailor/:id shows the
+  // proof immediately (no entrance replay); only the live run→done swap animates.
+  return reduced ? view : <AnimatePresence mode="wait" initial={false}>{view}</AnimatePresence>
 }
