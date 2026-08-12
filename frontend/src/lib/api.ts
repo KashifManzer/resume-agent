@@ -134,6 +134,12 @@ export async function sendFeedback(id: string, feedback: string): Promise<{ roun
 
 export const pdfUrl = (id: string) => `/jobs/${id}/pdf`
 
+/** Save the tailored PDF into the repo's tailored-resume/ folder + tracker CSV
+ *  (local-dev only). Returns the repo-relative path it wrote. */
+export async function saveLocal(id: string): Promise<{ saved_path: string; company: string; position: string }> {
+  return (await ok(await fetch(`/jobs/${id}/save-local`, { method: 'POST' }))).json()
+}
+
 /** Trigger a client-side download of the final .tex (it's already in the result). */
 export function downloadTex(tex: string, filename = 'resume.tex') {
   const url = URL.createObjectURL(new Blob([tex], { type: 'text/x-tex' }))

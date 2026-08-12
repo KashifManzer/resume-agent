@@ -9,6 +9,7 @@ import { Kicker } from '@/components/ui/Kicker'
 import { Mark } from '@/components/ui/Mark'
 import { Sheet } from '@/components/ui/Sheet'
 import { Stamp } from '@/components/ui/Stamp'
+import { useSaveLocal } from '@/hooks/useJobs'
 import { downloadTex, pdfUrl } from '@/lib/api'
 import { rise, stagger, useEntrance } from '@/lib/motion'
 import type { PipelineResult } from '@/lib/types'
@@ -28,6 +29,7 @@ export function Result({
 }) {
   const { report } = result
   const entrance = useEntrance()
+  const save = useSaveLocal()
 
   return (
     <motion.div
@@ -97,6 +99,26 @@ export function Result({
               Download .tex
             </Button>
           </div>
+
+          {/* Save locally (local-dev): file the PDF into tailored-resume/<company>/…
+              and log it in the tracker CSV. Does not touch the browser download. */}
+          <button
+            onClick={() => save.mutate(jobId)}
+            disabled={save.isPending}
+            className="mt-3 w-full rounded-md border border-dashed border-cream-soft/25 px-5 py-2.5 font-mono text-xs tracking-[0.15em] text-cream-soft uppercase transition hover:border-marigold/40 hover:text-cream disabled:opacity-40"
+          >
+            {save.isPending ? 'filing to the desk…' : 'Save locally'}
+          </button>
+          {save.isSuccess && (
+            <p className="mt-2 font-mono text-[11px] text-cream-soft">
+              saved → <span className="text-marigold">{save.data.saved_path}</span>
+            </p>
+          )}
+          {save.isError && (
+            <p role="alert" className="mt-2 font-mono text-[11px] text-gap-hi">
+              {(save.error as Error).message}
+            </p>
+          )}
 
           {/* T16: close the loop — carry this résumé straight to the posting's
               apply form, where the installed extension lights up and fills it.

@@ -6,11 +6,11 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app import db
-from app.models import Resume
+from app.models import Profile, Resume
 from app.routers.profile import PID
 from app.schemas.job import Job, JobSummary
 from app.schemas.selector import ResumeInput
-from app.services import jobs, storage
+from app.services import jobs, local_save, storage
 
 router = APIRouter()
 
@@ -100,3 +100,23 @@ def get_pdf(job_id: str):
         filename="resume.pdf",
         content_disposition_type="inline",
     )
+
+
+@router.post("/jobs/{job_id}/save-local")
+def save_local(job_id: str):
+    """Copy the tailored PDF into tailored-resume/ + upsert the tracker CSV
+    (LOCAL-DEV ONLY). Company/position are extracted from the JD."""
+    try:
+        job = jobs.store.get(job_id)
+    except jobs.JobNotFound:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.result is None:
+        raise HTTPException(status_code=409, detail="run isn't finished yet")
+    jd_text, _ = jobs.store.grounding(job_id)
+    with db.SessionLocal() as session:
+        p = session.get(Profile, PID)
+        name = p.name if p else None
+    try:
+        return local_save.save_local(job, jd_text, name)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))

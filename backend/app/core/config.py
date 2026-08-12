@@ -14,6 +14,12 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(Path(__file__).resolve().parents[2] / "data")))
 DB_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DATA_DIR / 'app.db'}")
 
+# Repo root + the local "Save locally" folder: the tailored PDF is copied here for
+# local application tracking (LOCAL-DEV ONLY — writes on whatever runs the backend).
+# Env-overridable so tests point it at a tmp dir.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+TAILORED_RESUME_DIR = Path(os.environ.get("TAILORED_RESUME_DIR", str(REPO_ROOT / "tailored-resume")))
+
 # LaTeX toolchain; override via env for Docker/deploy where it lives elsewhere.
 LATEXMK_BIN = os.environ.get("LATEXMK_BIN", "latexmk")
 LATEX_ENGINE = os.environ.get("LATEX_ENGINE", "pdflatex")  # -lualatex/-xelatex for fontspec

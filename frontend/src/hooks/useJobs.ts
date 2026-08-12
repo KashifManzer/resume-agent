@@ -1,6 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { ApiError, createJob, fetchJdFromUrl, getJob, listJobs, sendFeedback } from '@/lib/api'
+import {
+  ApiError,
+  createJob,
+  fetchJdFromUrl,
+  getJob,
+  listJobs,
+  saveLocal,
+  sendFeedback,
+} from '@/lib/api'
 import type { Job } from '@/lib/types'
 
 export function useCreateJob() {
@@ -27,6 +35,11 @@ export function useJdFromUrl() {
 /** All past runs for the History section (T14). */
 export function useJobsList() {
   return useQuery({ queryKey: ['jobs'], queryFn: listJobs })
+}
+
+/** Save the tailored PDF into the repo folder + tracker CSV (local-dev only). */
+export function useSaveLocal() {
+  return useMutation({ mutationFn: (id: string) => saveLocal(id) })
 }
 
 /** Poll a job every 2s until it finishes (long jobs — minutes). */

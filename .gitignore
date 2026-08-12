@@ -35,3 +35,6 @@ vendor/hiring-agent/.venv/
 vendor/hiring-agent/cache/
 vendor/hiring-agent/resume_evaluations.csv
 vendor/hiring-agent/*.log
+
+# Local application tracking (Save locally) — never committed
+/tailored-resume/
