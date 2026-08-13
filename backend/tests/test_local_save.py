@@ -53,24 +53,33 @@ def test_slugify_is_path_safe():
     assert local_save.slugify("../../etc/", "x") == "etc"  # traversal stripped to safe chars
 
 
-def test_flat_then_nest_then_overwrite(env, monkeypatch):
+def test_rule_c_and_idempotent_resave(env, monkeypatch):
+    """Rule C for new roles; a re-save of the SAME role (e.g. after a revision)
+    overwrites in place — flat or nested — leaving no duplicate/orphan."""
     base, pdf = env
-    positions = iter(["Senior SWE", "Senior SWE", "Staff SWE", "Staff SWE"])
-    monkeypatch.setattr(local_save, "extract_company_position", lambda jd: ("Adobe", next(positions)))
+    cp = {"v": ("Adobe", "Senior SWE")}
+    monkeypatch.setattr(local_save, "extract_company_position", lambda jd: cp["v"])
     j = _job(pdf)
 
-    assert local_save.save_local(j, "jd", "Kashif Manzer")["saved_path"] == \
-        "tailored-resume/adobe/kashif-manzer_resume.pdf"
-    # re-save the flat position → flat exists → nests (known, accepted C duplicate)
-    assert local_save.save_local(j, "jd", "Kashif Manzer")["saved_path"] == \
-        "tailored-resume/adobe/senior-swe/kashif-manzer_resume.pdf"
-    # a new position → nested
-    assert local_save.save_local(j, "jd", "Kashif Manzer")["saved_path"] == \
-        "tailored-resume/adobe/staff-swe/kashif-manzer_resume.pdf"
-    # re-saving that nested position overwrites in place — no second file appears
-    before = sorted((base / "adobe" / "staff-swe").iterdir())
-    local_save.save_local(j, "jd", "Kashif Manzer")
-    assert sorted((base / "adobe" / "staff-swe").iterdir()) == before
+    # first save → flat
+    r1 = local_save.save_local(j, "jd", "Kashif Manzer")
+    assert r1["saved_path"] == "tailored-resume/adobe/kashif-manzer_resume.pdf"
+    # revision re-save of the SAME role → overwrites the flat file, never nests
+    assert local_save.save_local(j, "jd", "Kashif Manzer")["saved_path"] == r1["saved_path"]
+    assert not (base / "adobe" / "senior-swe").exists()
+
+    # a genuinely NEW role at the same company → nested (rule C)
+    cp["v"] = ("Adobe", "Staff SWE")
+    r2 = local_save.save_local(j, "jd", "Kashif Manzer")
+    assert r2["saved_path"] == "tailored-resume/adobe/staff-swe/kashif-manzer_resume.pdf"
+    # revision re-save of the nested role → overwrites in place
+    assert local_save.save_local(j, "jd", "Kashif Manzer")["saved_path"] == r2["saved_path"]
+
+    # exactly two PDFs total — the flat senior role + the nested staff role, no orphans
+    assert sorted(str(p.relative_to(base)) for p in base.rglob("*.pdf")) == [
+        "adobe/kashif-manzer_resume.pdf",
+        "adobe/staff-swe/kashif-manzer_resume.pdf",
+    ]
 
 
 def test_csv_upsert_preserves_user_columns(env, monkeypatch):

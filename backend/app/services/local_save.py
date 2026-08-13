@@ -48,13 +48,32 @@ def extract_company_position(jd_text: str) -> tuple[str, str]:
     return cp.company, cp.position
 
 
+def _tracked_path(company: str, position: str) -> Path | None:
+    """Where this (company, position) was last saved, per the tracker CSV — so a
+    re-save (e.g. after a revision round) overwrites in place instead of leaving a
+    duplicate. None if this role hasn't been saved yet."""
+    path = config.TAILORED_RESUME_DIR / CSV_NAME
+    if not path.exists():
+        return None
+    for r in csv.DictReader(path.open(newline="", encoding="utf-8")):
+        if r.get("company") == company and r.get("position") == position and r.get("resume_path"):
+            return (config.TAILORED_RESUME_DIR.resolve().parent / r["resume_path"]).resolve()
+    return None
+
+
 def _resolve_target(company: str, position: str, filename: str) -> Path:
-    """Folder rule C: flat per company, nest by position once the flat one exists.
-    Traversal guard is belt-and-suspenders (slugs are already [a-z0-9-])."""
+    """A re-save of an already-tracked role overwrites in place. Otherwise folder
+    rule C: flat per company, nest by position once the flat one exists. Traversal
+    guard is belt-and-suspenders (slugs are already [a-z0-9-])."""
     base = config.TAILORED_RESUME_DIR.resolve()
-    company_dir = base / company
-    flat, nested = company_dir / filename, company_dir / position / filename
-    target = (nested if (flat.exists() or nested.exists()) else flat).resolve()
+    tracked = _tracked_path(company, position)
+    if tracked is not None:
+        target = tracked
+    else:
+        company_dir = base / company
+        flat, nested = company_dir / filename, company_dir / position / filename
+        target = nested if (flat.exists() or nested.exists()) else flat
+    target = target.resolve()
     if base != target and base not in target.parents:
         raise ValueError("refusing to write outside the tailored-resume folder")
     return target

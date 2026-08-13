@@ -33,20 +33,22 @@ No dialog — automatic on click. Both are **slugified path-safe** before use.
 - Empty/failed extraction → `unknown-company` / `unknown-position` (never blank, never a path separator).
 - Path-traversal guard: the resolved target path MUST stay inside `tailored-resume/`; reject otherwise.
 
-## Folder rule (option C — flat first, then nest; filesystem-only)
+## Folder rule (option C — flat first, then nest; idempotent on re-save)
 
 ```
-flat   = tailored-resume/<company>/<name>_resume.pdf
-nested = tailored-resume/<company>/<position>/<name>_resume.pdf
-target = nested  if (flat exists OR nested exists)  else  flat
+if (company, position) already has a tracker row → target = its recorded resume_path   # overwrite in place
+else:
+    flat   = tailored-resume/<company>/<name>_resume.pdf
+    nested = tailored-resume/<company>/<position>/<name>_resume.pdf
+    target = nested if (flat exists OR nested exists) else flat
 write PDF → target   # overwrite if present; mkdir -p parents
 ```
 
 - First save for a company → **flat**.
-- A later, different position → **nested** by position.
-- Re-saving an already-nested position → overwrites it in place.
-- Known imperfection (accepted): re-saving the *flat* position creates a nested duplicate. Rare; C was
-  chosen knowing this ("not big things right now").
+- A later, *different* position → **nested** by position.
+- **Re-saving the same role** (same JD → same company+position; e.g. after a revision round) →
+  **overwrites in place** at wherever it first landed (flat or nested), leaving no duplicate/orphan.
+  The tracker CSV is the memory of where the role lives.
 
 ## Filename
 
