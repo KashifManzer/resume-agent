@@ -36,7 +36,7 @@ export function Result({
       variants={stagger}
       {...entrance}
       exit={{ opacity: 0, transition: { duration: 0.2 } }}
-      className="mx-auto max-w-7xl px-6 py-14 lg:py-20"
+      className="mx-auto max-w-[96rem] px-6 py-14 lg:py-20"
     >
       <motion.header variants={rise} className="mb-10 flex items-end justify-between gap-6">
         <div>

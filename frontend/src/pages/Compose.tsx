@@ -10,6 +10,7 @@ import { Sheet } from '@/components/ui/Sheet'
 import { Textarea } from '@/components/ui/textarea'
 import { useCreateJob, useJdFromUrl } from '@/hooks/useJobs'
 import { useResumes } from '@/hooks/useProfile'
+import { markTailored } from '@/hooks/useSetup'
 import { rise, stagger, useEntrance } from '@/lib/motion'
 
 function Eyebrow({ n, children }: { n: string; children: React.ReactNode }) {
@@ -21,54 +22,10 @@ function Eyebrow({ n, children }: { n: string; children: React.ReactNode }) {
   )
 }
 
-// The honesty differentiator, told as an editorial spec band on the desk — the
-// four things that make this tailoring trustworthy. Presentation only.
-const PILLARS = [
-  {
-    tag: 'latex-native',
-    title: 'Tailors your real .tex',
-    body: 'We edit your actual LaTeX source and compile a true one-page PDF — never a lossy re-type.',
-  },
-  {
-    tag: 'no fabrication',
-    title: "Only what's yours",
-    body: 'Nothing invented. Every claim we add to hit the match is surfaced for you to stand behind.',
-  },
-  {
-    tag: 'grounded ATS',
-    title: 'Scored on real keywords',
-    body: "JD-fit measured against the posting's actual terms, before and after — no vanity number.",
-  },
-  {
-    tag: 'quality gate',
-    title: 'A hiring agent signs off',
-    body: 'An independent hiring-agent reviews the result and must pass it before it reaches you.',
-  },
-] as const
-
-function Guarantees() {
-  return (
-    <motion.section
-      variants={rise}
-      aria-label="How the tailoring stays honest"
-      className="border-y border-desk-line py-8 lg:col-span-2"
-    >
-      <div className="grid grid-cols-1 gap-x-8 gap-y-7 sm:grid-cols-2 lg:grid-cols-4">
-        {PILLARS.map((p, i) => (
-          <div key={p.tag}>
-            <div className="flex items-baseline gap-2 font-mono text-[10px] tracking-[0.26em] uppercase">
-              <span className="text-marigold tabular-nums">0{i + 1}</span>
-              <span className="text-cream-soft">{p.tag}</span>
-            </div>
-            <h3 className="mt-2.5 font-serif text-xl leading-tight text-cream">{p.title}</h3>
-            <p className="mt-1.5 text-[13px] leading-relaxed text-cream-soft">{p.body}</p>
-          </div>
-        ))}
-      </div>
-    </motion.section>
-  )
-}
-
+// The working screen (T21): on a real desk (`desk:` — wide and tall enough) this
+// fills the viewport exactly and never scrolls the page. The brief and the
+// sources scroll *inside* their columns, so the Tailor button stays in view no
+// matter how long the JD is. Anything smaller falls back to natural scroll.
 export function Compose() {
   const navigate = useNavigate()
   const [jd, setJd] = useState('')
@@ -107,7 +64,12 @@ export function Compose() {
     // so the Result page can offer one-click "Apply with this résumé".
     const applyUrl = jdFetch.data?.apply_url ?? null
     const payload = files.length > 0 ? { jd, files, applyUrl } : { jd, resumeIds: selected, applyUrl }
-    create.mutate(payload, { onSuccess: (r) => navigate(`/tailor/${r.job_id}`) })
+    create.mutate(payload, {
+      onSuccess: (r) => {
+        markTailored() // outlives the in-memory job list, so setup stays "done"
+        navigate(`/tailor/${r.job_id}`)
+      },
+    })
   }
 
   function fetchLink() {
@@ -120,140 +82,153 @@ export function Compose() {
     <motion.div
       variants={stagger}
       {...entrance}
-      className="mx-auto grid max-w-6xl grid-cols-1 gap-x-14 gap-y-12 px-6 py-16 lg:grid-cols-[1.1fr_0.9fr] lg:py-24"
+      className="mx-auto flex max-w-[96rem] flex-col gap-9 px-6 py-12 desk:h-full desk:gap-7 desk:overflow-hidden desk:py-8"
     >
-      <motion.header variants={rise} className="lg:col-span-2">
-        <Kicker>the proofing desk</Kicker>
-        <h1 className="mt-4 max-w-3xl font-serif text-6xl leading-[0.9] font-medium tracking-[-0.02em] text-cream sm:text-7xl lg:text-8xl">
-          Set the brief<span className="text-marigold">.</span>
-        </h1>
-        <p className="mt-6 max-w-xl text-lg leading-relaxed text-cream-soft">
+      {/* the masthead: title left, the deck alongside it — a slim working header,
+          not a landing hero, so the desk itself is above the fold */}
+      <motion.header
+        variants={rise}
+        className="flex shrink-0 flex-wrap items-end justify-between gap-x-14 gap-y-4 border-b border-desk-line pb-6"
+      >
+        <div>
+          <Kicker>the proofing desk</Kicker>
+          <h1 className="mt-3 font-serif text-5xl leading-[0.9] font-medium tracking-[-0.02em] text-cream sm:text-6xl">
+            Set the brief<span className="text-marigold">.</span>
+          </h1>
+        </div>
+        <p className="max-w-lg text-sm leading-relaxed text-cream-soft sm:text-right">
           Paste the job description and lay your résumé sources on the desk. We&rsquo;ll pick the
           closest one, tailor it to the role &mdash; honestly, one page &mdash; and hand back a
           proofed PDF.
         </p>
       </motion.header>
 
-      <Guarantees />
+      <div className="grid grid-cols-1 gap-x-14 gap-y-12 desk:min-h-0 desk:flex-1 lg:grid-cols-[1.1fr_0.9fr]">
+        <motion.div variants={rise} className="flex flex-col gap-4 desk:min-h-0">
+          <label htmlFor="jd" className="block shrink-0">
+            <Eyebrow n="01">the brief · job description</Eyebrow>
+          </label>
 
-      <motion.div variants={rise} className="space-y-4">
-        <label htmlFor="jd" className="block">
-          <Eyebrow n="01">the brief · job description</Eyebrow>
-        </label>
+          {/* paste a job link → fills the JD field (Workday · Greenhouse · Lever · Ashby, else generic) */}
+          <div className="shrink-0 space-y-2">
+            <div className="flex gap-2">
+              <input
+                type="url"
+                value={link}
+                onChange={(e) => setLink(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), fetchLink())}
+                placeholder="…or paste a job link (Workday · Greenhouse · Lever · Ashby)"
+                className="min-w-0 flex-1 rounded-md border border-cream-soft/20 bg-transparent px-3 py-2.5 font-mono text-xs text-cream placeholder:text-cream-soft/50 focus:border-marigold focus:outline-none"
+              />
+              <Button
+                onClick={fetchLink}
+                disabled={!link.trim() || jdFetch.isPending}
+                className="rounded-md bg-cream-soft/10 px-4 font-mono text-xs tracking-[0.15em] text-cream uppercase hover:bg-cream-soft/20 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {jdFetch.isPending ? 'fetching…' : 'fetch'}
+              </Button>
+            </div>
+            {jdFetch.isError && (
+              <p role="alert" className="font-mono text-xs text-gap-hi">
+                {(jdFetch.error as Error).message}
+              </p>
+            )}
+            {jdFetch.data && (
+              <p className="font-mono text-xs text-cream-soft">
+                filled from <span className="text-marigold">{jdFetch.data.adapter}</span>
+                {jdFetch.data.title ? ` · ${jdFetch.data.title}` : ''} — review &amp; edit below before running.
+              </p>
+            )}
+            {jdFetch.data?.warnings?.map((w) => (
+              <p key={w} className="font-mono text-xs text-gap-hi">
+                ⚠ {w}
+              </p>
+            ))}
+          </div>
 
-        {/* paste a job link → fills the JD field (Workday · Greenhouse · Lever · Ashby, else generic) */}
-        <div className="space-y-2">
-          <div className="flex gap-2">
-            <input
-              type="url"
-              value={link}
-              onChange={(e) => setLink(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), fetchLink())}
-              placeholder="…or paste a job link (Workday · Greenhouse · Lever · Ashby)"
-              className="min-w-0 flex-1 rounded-md border border-cream-soft/20 bg-transparent px-3 py-2.5 font-mono text-xs text-cream placeholder:text-cream-soft/50 focus:border-marigold focus:outline-none"
+          {/* the brief, laid on a proofing sheet with a red margin rule. The sheet
+              fills the column and the paste scrolls *inside* it — a long JD never
+              grows the page. */}
+          <Sheet className="relative overflow-hidden desk:min-h-0 desk:flex-1">
+            <div aria-hidden className="pointer-events-none absolute inset-y-0 left-11 w-px bg-gap/30" />
+            <Textarea
+              id="jd"
+              value={jd}
+              onChange={(e) => setJd(e.target.value)}
+              placeholder="Paste the full job description…"
+              className="h-96 resize-none field-sizing-fixed overflow-y-auto border-0 bg-transparent py-5 pr-5 pl-16 text-base leading-relaxed text-ink shadow-none placeholder:text-ink-soft/60 focus-visible:ring-0 desk:h-full"
             />
+          </Sheet>
+        </motion.div>
+
+        <motion.div variants={rise} className="flex flex-col gap-5 desk:min-h-0">
+          <Eyebrow n="02">your sources · .tex files</Eyebrow>
+
+          {/* pick from the saved library (default pre-checked) — no forced re-upload.
+              A long library scrolls here rather than pushing the button off-screen;
+              the slack goes to the drop target below, not to a hole in the column. */}
+          <div className="space-y-2 desk:max-h-[45%] desk:shrink-0 desk:overflow-y-auto">
+            {resumesLoading && <ListSkeleton rows={2} />}
+            {!resumesLoading && resumes.length > 0 && (
+              <>
+                <Sheet as="ul" sm className="divide-y divide-border overflow-hidden">
+                  {resumes.map((r) => (
+                    <li key={r.id}>
+                      <label className="flex cursor-pointer items-center gap-3 px-4 py-2.5">
+                        <input
+                          type="checkbox"
+                          checked={selected.includes(r.id)}
+                          onChange={() => toggle(r.id)}
+                          className="size-4 accent-marigold"
+                        />
+                        <span className="truncate font-mono text-sm text-ink">{r.label || r.filename}</span>
+                        {r.is_default && (
+                          <span className="ml-auto shrink-0 rounded bg-marigold/20 px-2 py-0.5 font-mono text-[10px] tracking-[0.15em] text-marigold uppercase">
+                            default
+                          </span>
+                        )}
+                      </label>
+                    </li>
+                  ))}
+                </Sheet>
+                <p className="font-mono text-[11px] text-cream-soft">
+                  from your library — or upload a fresh one below (an upload takes precedence).
+                </p>
+              </>
+            )}
+
+            {!resumesLoading && resumes.length === 0 && (
+              <p className="font-mono text-[11px] leading-relaxed text-cream-soft">
+                No saved résumés yet — drop one below for this run, or{' '}
+                <Link to="/library" className="text-marigold underline-offset-2 hover:underline">
+                  add it to your library
+                </Link>{' '}
+                to reuse it on every run.
+              </p>
+            )}
+          </div>
+
+          <Dropzone files={files} onChange={setFiles} className="desk:min-h-0 desk:flex-1" />
+
+          <div className="shrink-0 space-y-3 pt-2">
+            {create.isError && (
+              <p role="alert" className="font-mono text-sm text-gap-hi">
+                {(create.error as Error).message}
+              </p>
+            )}
             <Button
-              onClick={fetchLink}
-              disabled={!link.trim() || jdFetch.isPending}
-              className="rounded-md bg-cream-soft/10 px-4 font-mono text-xs tracking-[0.15em] text-cream uppercase hover:bg-cream-soft/20 disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={submit}
+              disabled={!canSubmit}
+              className="h-14 w-full rounded-md bg-marigold font-mono text-sm tracking-[0.2em] text-ink uppercase shadow-[0_10px_30px_-12px_rgba(243,180,31,0.7)] transition hover:bg-marigold hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-35 disabled:shadow-none"
             >
-              {jdFetch.isPending ? 'fetching…' : 'fetch'}
+              {create.isPending ? 'sending to the press…' : 'Tailor my résumé →'}
             </Button>
-          </div>
-          {jdFetch.isError && (
-            <p role="alert" className="font-mono text-xs text-gap-hi">
-              {(jdFetch.error as Error).message}
-            </p>
-          )}
-          {jdFetch.data && (
-            <p className="font-mono text-xs text-cream-soft">
-              filled from <span className="text-marigold">{jdFetch.data.adapter}</span>
-              {jdFetch.data.title ? ` · ${jdFetch.data.title}` : ''} — review &amp; edit below before running.
-            </p>
-          )}
-          {jdFetch.data?.warnings?.map((w) => (
-            <p key={w} className="font-mono text-xs text-gap-hi">
-              ⚠ {w}
-            </p>
-          ))}
-        </div>
-
-        {/* the brief, laid on a proofing sheet with a red margin rule */}
-        <Sheet className="relative overflow-hidden">
-          <div aria-hidden className="pointer-events-none absolute inset-y-0 left-11 w-px bg-gap/30" />
-          <Textarea
-            id="jd"
-            value={jd}
-            onChange={(e) => setJd(e.target.value)}
-            placeholder="Paste the full job description…"
-            className="min-h-[24rem] resize-y border-0 bg-transparent py-5 pr-5 pl-16 text-base leading-relaxed text-ink shadow-none placeholder:text-ink-soft/60 focus-visible:ring-0"
-          />
-        </Sheet>
-      </motion.div>
-
-      <motion.div variants={rise} className="flex flex-col gap-5">
-        <Eyebrow n="02">your sources · .tex files</Eyebrow>
-
-        {/* pick from the saved library (default pre-checked) — no forced re-upload */}
-        {resumesLoading && <ListSkeleton rows={2} />}
-        {!resumesLoading && resumes.length > 0 && (
-          <div className="space-y-2">
-            <Sheet as="ul" sm className="divide-y divide-border overflow-hidden">
-              {resumes.map((r) => (
-                <li key={r.id}>
-                  <label className="flex cursor-pointer items-center gap-3 px-4 py-2.5">
-                    <input
-                      type="checkbox"
-                      checked={selected.includes(r.id)}
-                      onChange={() => toggle(r.id)}
-                      className="size-4 accent-marigold"
-                    />
-                    <span className="truncate font-mono text-sm text-ink">{r.label || r.filename}</span>
-                    {r.is_default && (
-                      <span className="ml-auto shrink-0 rounded bg-marigold/20 px-2 py-0.5 font-mono text-[10px] tracking-[0.15em] text-marigold uppercase">
-                        default
-                      </span>
-                    )}
-                  </label>
-                </li>
-              ))}
-            </Sheet>
-            <p className="font-mono text-[11px] text-cream-soft">
-              from your library — or upload a fresh one below (an upload takes precedence).
+            <p className="text-center font-mono text-xs text-cream-soft">
+              a real run takes a few minutes — the LLM tailors, compiles &amp; scores.
             </p>
           </div>
-        )}
-
-        {!resumesLoading && resumes.length === 0 && (
-          <p className="font-mono text-[11px] leading-relaxed text-cream-soft">
-            No saved résumés yet — drop one below for this run, or{' '}
-            <Link to="/library" className="text-marigold underline-offset-2 hover:underline">
-              add it to your library
-            </Link>{' '}
-            to reuse it on every run.
-          </p>
-        )}
-
-        <Dropzone files={files} onChange={setFiles} />
-
-        <div className="mt-auto space-y-3 pt-2">
-          {create.isError && (
-            <p role="alert" className="font-mono text-sm text-gap-hi">
-              {(create.error as Error).message}
-            </p>
-          )}
-          <Button
-            onClick={submit}
-            disabled={!canSubmit}
-            className="h-14 w-full rounded-md bg-marigold font-mono text-sm tracking-[0.2em] text-ink uppercase shadow-[0_10px_30px_-12px_rgba(243,180,31,0.7)] transition hover:bg-marigold hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-35 disabled:shadow-none"
-          >
-            {create.isPending ? 'sending to the press…' : 'Tailor my résumé →'}
-          </Button>
-          <p className="text-center font-mono text-xs text-cream-soft">
-            a real run takes a few minutes — the LLM tailors, compiles &amp; scores.
-          </p>
-        </div>
-      </motion.div>
+        </motion.div>
+      </div>
     </motion.div>
   )
 }

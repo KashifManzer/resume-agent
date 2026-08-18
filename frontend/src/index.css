@@ -7,6 +7,13 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* The Compose viewport-lock (T21). It only applies when the desk is wide enough
+   for two columns AND tall enough to hold them; on anything smaller the screen
+   falls back to natural scroll so the button is always reachable and nothing is
+   clipped (WCAG 1.4.10 reflow). One variant instead of stacking `lg:` + a height
+   query on every locked utility. */
+@custom-variant desk (@media (min-width: 64rem) and (min-height: 44rem));
+
 /* ── The typesetter's proofing desk ─────────────────────────────────────────
    A dark espresso DESK under a warm lamp; bright cream PAPER sheets are laid on
    it and lift off with real shadow. Type is a pairing — Fraunces for display,
@@ -49,6 +56,10 @@
   --color-highlight: var(--highlight);
   --color-gap: var(--gap);
   --color-gap-hi: var(--gap-hi);
+  /* the hairline rules — registered so `border-desk-line` / `divide-paper-line`
+     actually compile; the raw :root vars alone generate no utility. */
+  --color-desk-line: var(--desk-line);
+  --color-paper-line: var(--paper-line);
 
   --radius-sm: calc(var(--radius) * 0.7);
   --radius-md: var(--radius);

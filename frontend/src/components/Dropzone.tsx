@@ -8,11 +8,14 @@ export function Dropzone({
   onChange,
   title = 'Add your résumé sources',
   hint,
+  className,
 }: {
   files: File[]
   onChange: (files: File[]) => void
   title?: string
   hint?: React.ReactNode
+  /** Layout hook for the caller — e.g. Compose lets the target fill its column. */
+  className?: string
 }) {
   const [over, setOver] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -27,7 +30,7 @@ export function Dropzone({
   }
 
   return (
-    <div className="space-y-3">
+    <div className={cn('flex flex-col gap-3', className)}>
       <Sheet
         role="button"
         tabIndex={0}
@@ -50,7 +53,9 @@ export function Dropzone({
           add(e.dataTransfer.files)
         }}
         className={cn(
-          'group relative flex cursor-pointer flex-col items-center justify-center gap-2 px-6 py-12 text-center transition-all outline-none',
+          // `grow` (basis auto) not `flex-1`: it keeps its natural height where the
+          // column is auto-sized, and fills the slack where the caller gives it one.
+          'group relative flex grow cursor-pointer flex-col items-center justify-center gap-2 px-6 py-12 text-center transition-all outline-none',
           'hover:-translate-y-0.5 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-desk',
           over && 'ring-2 ring-marigold',
         )}

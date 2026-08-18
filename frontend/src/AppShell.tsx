@@ -56,9 +56,13 @@ export function AppShell() {
   const outlet = useOutlet()
   const reduced = useReducedMotion()
   return (
-    <div className="min-h-svh overflow-x-clip">
-      <header className="relative">
-        <div className="mx-auto max-w-6xl px-6">
+    // A flex column, not a document: the header takes what it needs and <main>
+    // is the one scroll region. That hands routes a *definite* height to fill
+    // (Compose's viewport-lock, T21) without hardcoding the header's pixel
+    // height, which wraps responsively and would drift.
+    <div className="flex h-svh flex-col overflow-x-clip">
+      <header className="relative shrink-0">
+        <div className="mx-auto max-w-[96rem] px-6">
           <div className="flex items-center justify-between border-t border-desk-line pt-3">
             <span className="font-mono text-[10px] tracking-[0.32em] text-cream-soft uppercase">
               Est. on the desk
@@ -89,14 +93,23 @@ export function AppShell() {
         <div className="h-px bg-desk-line" />
       </header>
 
-      <main>
+      <main className="min-h-0 flex-1 overflow-y-auto">
         {reduced ? (
           outlet
         ) : (
           // initial={false}: no entrance on first load (content is immediate on a
           // cold/direct-URL load) — only client-side navigations crossfade.
+          // h-full keeps the percentage chain intact so a route can fill <main>;
+          // taller routes simply overflow it and scroll.
           <AnimatePresence mode="wait" initial={false}>
-            <motion.div key={location.pathname} variants={pageFade} initial="hidden" animate="show" exit="exit">
+            <motion.div
+              key={location.pathname}
+              variants={pageFade}
+              initial="hidden"
+              animate="show"
+              exit="exit"
+              className="h-full"
+            >
               {outlet}
             </motion.div>
           </AnimatePresence>
