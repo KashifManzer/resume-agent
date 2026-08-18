@@ -72,6 +72,49 @@ def test_noop_revision_does_not_consume_a_round(monkeypatch):
     assert jobs.NO_CHANGE_NOTE in j.result.report.warnings
 
 
+def test_failed_revision_keeps_the_last_good_proof(monkeypatch):
+    """A network blip mid-revision must not cost the user the proof they already
+    have, or a round. The run stays `done` on the previous result and says why."""
+    steps = iter([_result(80, "TEX0"), OSError("[Errno 60] Operation timed out")])
+
+    def run(jd, rs, **k):
+        step = next(steps)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+    store = _store(monkeypatch, run)
+    job = store.create("jd", [ResumeInput(id="r", tex="T")])
+    store.run(job.id)
+    store.request_feedback(job.id, "tone down the AI/ML framing")
+    store.run(job.id)
+
+    j = store.get(job.id)
+    assert j.status == "done"  # not stranded on the error screen
+    assert j.result.tex == "TEX0"  # the finished résumé is still reachable
+    assert j.round == 0  # the failed round was handed back
+    assert len(j.rounds) == 1  # no slip for work that never happened
+    assert any("Errno 60" in w for w in j.result.report.warnings)
+
+
+def test_repeated_revision_failures_keep_one_note(monkeypatch):
+    """Retrying after a blip replaces the note rather than stacking copies."""
+    store = _store(monkeypatch)
+    job = store.create("jd", [ResumeInput(id="r", tex="T")])
+    store.run(job.id)  # a good round 0 to fall back to
+
+    def boom(jd, rs, **k):
+        raise OSError("boom")
+
+    monkeypatch.setattr(jobs, "run_pipeline", boom)
+    for _ in range(3):
+        store.request_feedback(job.id, "try again")
+        store.run(job.id)
+
+    notes = [w for w in store.get(job.id).result.report.warnings if jobs.REVISION_FAILED in w]
+    assert len(notes) == 1
+
+
 def test_rounds_accumulate_with_deltas(monkeypatch):
     results = iter([
         _result(80, "TEX0", summary="initial tailoring"),

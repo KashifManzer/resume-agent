@@ -40,6 +40,7 @@ class _Record:
 
 
 NO_CHANGE_NOTE = "no change made - round not counted"
+REVISION_FAILED = "revision failed, nothing changed"  # prefix: the cause is appended
 
 
 def _round_entry(index: int, feedback: str | None, result: PipelineResult, prev: list[RoundEntry]):
@@ -148,8 +149,21 @@ class JobStore:
             rec.prior = result
             rec.pending_feedback = None
         except Exception as e:  # never let a worker thread die silently
-            rec.job.status = "error"
-            rec.job.error = str(e)
+            # A failed REVISION must not cost the user the proof they already have
+            # (a transient LLM/network blip is the common case). Fall back to the
+            # last good result, hand the round back, and say what happened. A first
+            # pass has nothing to fall back to, so it still surfaces as an error.
+            if feedback and rec.prior is not None:
+                rec.job.round = max(0, rec.job.round - 1)
+                rec.job.result = rec.prior
+                rec.job.status = "done"
+                rec.pending_feedback = None
+                notes = rec.prior.report.warnings
+                notes[:] = [n for n in notes if not n.startswith(REVISION_FAILED)]
+                notes.append(f"{REVISION_FAILED}: {e}")
+            else:
+                rec.job.status = "error"
+                rec.job.error = str(e)
 
 
 store = JobStore()  # module-level singleton the routers share
