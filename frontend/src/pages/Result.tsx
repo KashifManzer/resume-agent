@@ -3,6 +3,7 @@ import { motion } from 'motion/react'
 import { FeedbackBox } from '@/components/FeedbackBox'
 import { HiringAgentCard } from '@/components/HiringAgentCard'
 import { KeywordMarks } from '@/components/KeywordMarks'
+import { RevisionLog } from '@/components/RevisionLog'
 import { ScoreReveal } from '@/components/ScoreReveal'
 import { Button } from '@/components/ui/button'
 import { Kicker } from '@/components/ui/Kicker'
@@ -12,17 +13,19 @@ import { Stamp } from '@/components/ui/Stamp'
 import { useSaveLocal } from '@/hooks/useJobs'
 import { downloadTex, pdfUrl } from '@/lib/api'
 import { rise, stagger, useEntrance } from '@/lib/motion'
-import type { PipelineResult } from '@/lib/types'
+import type { PipelineResult, RoundEntry } from '@/lib/types'
 
 export function Result({
   jobId,
   round,
+  rounds,
   result,
   applyUrl,
   onStartOver,
 }: {
   jobId: string
   round: number
+  rounds: RoundEntry[]
   result: PipelineResult
   applyUrl: string | null
   onStartOver: () => void
@@ -177,27 +180,15 @@ export function Result({
             </Sheet>
           )}
 
-          {report.changes.length > 0 && (
-            <Sheet as={motion.section} variants={rise} className="p-7">
-              <h2 className="mb-4 font-serif text-2xl text-ink">What changed</h2>
-              <ul className="space-y-3">
-                {report.changes.map((c, i) => (
-                  <li key={i} className="flex gap-3 text-ink">
-                    <span aria-hidden className="mt-1.5 font-mono text-xs text-marigold tabular-nums">
-                      {String(i + 1).padStart(2, '0')}
-                    </span>
-                    <span className="leading-relaxed">{c}</span>
-                  </li>
-                ))}
-              </ul>
-            </Sheet>
-          )}
-
           {report.hiring_agent && (
             <motion.div variants={rise}>
               <HiringAgentCard report={report.hiring_agent} />
             </motion.div>
           )}
+
+          {/* The round history sits directly above the revision box, so asking for
+              one and watching a new slip land on the log is a single motion. */}
+          <RevisionLog rounds={rounds} warnings={report.warnings} />
 
           <motion.div variants={rise}>
             <FeedbackBox jobId={jobId} round={round} />

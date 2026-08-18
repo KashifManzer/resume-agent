@@ -1,3 +1,5 @@
+from itertools import count
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -15,9 +17,18 @@ def client(monkeypatch, tmp_path):
         overall=80, keyword_coverage=1.0, llm_fit=80,
         required_keywords=[], matched=[], missing=[], rationale="r",
     )
-    result = PipelineResult(pdf_path=pdf, tex="TEX", report=Report(ats_before=a, ats_after=a))
+    # A fresh result per run, with a changing tex — a repeat of the same résumé is
+    # a no-op revision that hands the round back (T22), which the cap test needs.
+    counter = count()
+
+    def run(jd, rs, **k):
+        i = next(counter)
+        return PipelineResult(
+            pdf_path=pdf, tex="TEX" if i == 0 else f"TEX{i}", report=Report(ats_before=a, ats_after=a)
+        )
+
     # BackgroundTasks run before TestClient returns, so the pipeline "completes" instantly.
-    monkeypatch.setattr(jobs, "run_pipeline", lambda jd, rs, **k: result)
+    monkeypatch.setattr(jobs, "run_pipeline", run)
     jobs.store._recs.clear()
     return TestClient(app)
 

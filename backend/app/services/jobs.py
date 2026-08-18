@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from app.core.config import OUTER_LOOP_MAX
-from app.schemas.job import Job, JobSummary
+from app.schemas.job import Job, JobSummary, RoundEntry
 from app.schemas.pipeline import PipelineResult
 from app.schemas.selector import ResumeInput
 from app.services.pipeline import run_pipeline
@@ -37,6 +37,25 @@ class _Record:
     pending_feedback: str | None = None
     prior: PipelineResult | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+NO_CHANGE_NOTE = "no change made - round not counted"
+
+
+def _round_entry(index: int, feedback: str | None, result: PipelineResult, prev: list[RoundEntry]):
+    """One slip for the proof-rounds timeline. Delta is vs the previous round, so
+    round 0 has none (its before→after lives in the score headline)."""
+    overall = result.report.ats_after.overall
+    return RoundEntry(
+        index=index,
+        kind="revision" if feedback else "initial",
+        feedback=feedback,
+        summary=result.report.summary,
+        ats_overall=overall,
+        ats_delta=None if not prev else overall - prev[-1].ats_overall,
+        changes=result.report.changes,
+        added=result.report.added,
+    )
 
 
 def _title(jd_text: str) -> str:
@@ -106,14 +125,24 @@ class JobStore:
         rec = self._recs[job_id]
         rec.job.status = "running"
         rec.job.progress = []
+        feedback = rec.pending_feedback
         try:
             result = run_pipeline(
                 rec.jd_text,
                 rec.resumes,
-                feedback=rec.pending_feedback,
+                feedback=feedback,
                 prior=rec.prior,
                 on_progress=rec.job.progress.append,
             )
+            # Honest round accounting (T22): a revision that changed nothing costs
+            # no round and leaves no slip on the timeline.
+            if feedback and rec.prior is not None and result.tex == rec.prior.tex:
+                rec.job.round = max(0, rec.job.round - 1)
+                result.report.warnings.append(NO_CHANGE_NOTE)
+            else:
+                rec.job.rounds.append(
+                    _round_entry(rec.job.round, feedback, result, rec.job.rounds)
+                )
             rec.job.result = result
             rec.job.status = "done"
             rec.prior = result

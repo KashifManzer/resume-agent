@@ -5,7 +5,7 @@ import pytest
 
 from app.schemas.ats import AtsScore
 from app.schemas.improver import ImproveResult
-from app.schemas.pipeline import HiringAgentReport
+from app.schemas.pipeline import HiringAgentReport, PipelineResult, Report
 from app.schemas.render import Guards, RenderResult
 from app.schemas.selector import ResumeInput, Selection
 from app.services import pipeline
@@ -55,9 +55,9 @@ def _mock(monkeypatch, scores, *, warning=None, hiring=None):
     monkeypatch.setattr(
         pipeline.improver,
         "improve",
-        lambda tex, jd, ats: ImproveResult(
+        lambda tex, jd, ats, feedback=None: ImproveResult(
             tex=tex + "+", changed=True, changes=["change"], added=["Rust"],
-            compiled=True, single_page=True,
+            summary="did a thing", compiled=True, single_page=True,
         ),
     )
 
@@ -117,6 +117,87 @@ def test_selection_warning_propagates(monkeypatch):
     _mock(monkeypatch, [30, 30], warning="no résumé is a strong match")
     r = pipeline.run_pipeline("jd", RESUMES)
     assert r.report.selection_warning == "no résumé is a strong match"
+
+
+def test_first_pass_summary_is_last_accepted_pass(monkeypatch):
+    _mock(monkeypatch, [70, 80, 85, 85])
+    monkeypatch.setattr(
+        pipeline.improver, "improve",
+        _improver(lambda n: ImproveResult(
+            tex=f"TEX{n}", changed=True, summary=f"pass {n}", compiled=True, single_page=True,
+        )),
+    )
+    r = pipeline.run_pipeline("jd", RESUMES)
+    assert r.report.summary == "pass 1"  # the 3rd pass plateaus and is discarded
+
+
+# --- T22: a user revision is directed, not optimized -----------------------
+
+
+def _prior(overall=99, tex="PRIOR"):
+    return PipelineResult(
+        pdf_path=Path("/tmp/prior.pdf"),
+        tex=tex,
+        report=Report(ats_before=_ats(60), ats_after=_ats(overall), changes=["earlier"]),
+    )
+
+
+def _improver(make):
+    """Record improve() calls and hand each one to `make(call_index)`."""
+    calls = []
+
+    def fake(tex, jd, ats, feedback=None):
+        calls.append({"tex": tex, "jd": jd, "feedback": feedback})
+        return make(len(calls) - 1)
+
+    fake.calls = calls
+    return fake
+
+
+def test_revision_is_kept_even_when_ats_drops(monkeypatch):
+    """THE T22 REGRESSION: 'tone down X' lowers keyword coverage. The human asked
+    for it, so the edit ships and we report the lower score honestly."""
+    _mock(monkeypatch, [92])  # the revised résumé scores BELOW the prior's 99
+    monkeypatch.setattr(
+        pipeline.improver, "improve",
+        _improver(lambda n: ImproveResult(
+            tex="REVISED", changed=True, changes=["toned down AI/ML"],
+            summary="Led with the platform work.", compiled=True, single_page=True,
+        )),
+    )
+    r = pipeline.run_pipeline("jd", RESUMES, feedback="tone down the AI/ML framing", prior=_prior())
+    assert r.tex == "REVISED"  # not discarded by the ATS gate
+    assert r.report.ats_after.overall == 92  # scored honestly, drop and all
+    assert r.report.changes == ["toned down AI/ML"]
+    assert r.report.summary == "Led with the platform work."
+
+
+def test_revision_runs_exactly_one_directed_pass(monkeypatch):
+    """One human request → one pass. No autonomous re-optimization on top of it,
+    and the feedback arrives first-class rather than stapled onto the JD."""
+    _mock(monkeypatch, [99, 99, 99])
+    fake = _improver(lambda n: ImproveResult(
+        tex=f"REV{n}", changed=True, compiled=True, single_page=True,
+    ))
+    monkeypatch.setattr(pipeline.improver, "improve", fake)
+    r = pipeline.run_pipeline("jd", RESUMES, feedback="lead with platform", prior=_prior())
+    assert len(fake.calls) == 1
+    assert fake.calls[0]["feedback"] == "lead with platform"
+    assert fake.calls[0]["jd"] == "jd"  # the JD is not polluted with the request
+    assert r.tex == "REV0"
+
+
+def test_revision_falls_back_to_prior_when_no_valid_candidate(monkeypatch):
+    _mock(monkeypatch, [99])
+    monkeypatch.setattr(
+        pipeline.improver, "improve",
+        _improver(lambda n: ImproveResult(
+            tex="PRIOR", changed=False, compiled=True, single_page=True,
+        )),
+    )
+    r = pipeline.run_pipeline("jd", RESUMES, feedback="do something", prior=_prior())
+    assert r.tex == "PRIOR"
+    assert r.report.ats_after.overall == 99  # the prior's score, untouched
 
 
 # --- live end-to-end (real select→render→score↔improve→gate; slow) ----------

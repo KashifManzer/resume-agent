@@ -43,6 +43,7 @@ export function Tailor() {
         key="result"
         jobId={job.id}
         round={job.round}
+        rounds={job.rounds}
         result={job.result}
         applyUrl={job.apply_url}
         onStartOver={startOver}

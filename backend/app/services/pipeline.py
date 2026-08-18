@@ -51,25 +51,32 @@ def run_pipeline(
     best_tex, best_ats, best_pdf = picked_tex, ats_before, base.pdf_path
     changes: list[str] = []
     added: list[str] = []
+    summary = ""
 
-    # 2. Inner loop — the only optimization loop. Keep a candidate only if it
-    #    compiles, is ≤1 page, and improves `overall`; stop early on plateau/target.
-    jd_for_edit = jd_text if not feedback else f"{jd_text}\n\nUSER FEEDBACK (address this): {feedback}"
-    for i in range(INNER_LOOP_MAX):
-        progress(f"improving (round {i + 1})")
-        imp = improver.improve(best_tex, jd_for_edit, best_ats)
+    # 2. Inner loop — the only optimization loop, and only for a FIRST pass: keep a
+    #    candidate if it compiles, is ≤1 page, and improves `overall`; stop early on
+    #    plateau/target.
+    #    A user revision is human-directed, so it runs ONE pass and is accepted when
+    #    VALID - the ATS metric never vetoes the person (T22). We still score it
+    #    honestly and report the drop when the trade costs coverage.
+    for i in range(1 if feedback else INNER_LOOP_MAX):
+        progress("applying your revision" if feedback else f"improving (round {i + 1})")
+        imp = improver.improve(best_tex, jd_text, best_ats, feedback=feedback)
         if not imp.changed:
             break
         cand = render.render_tex(imp.tex)
         if not (cand.guards.compiles and cand.guards.single_page):
             break  # improver validates already; never trust — stop rather than ship junk
         cand_ats = ats.score_ats(jd_text, cand.text)
-        if cand_ats.overall <= best_ats.overall:
+        if not feedback and cand_ats.overall <= best_ats.overall:
             break  # plateau / regression — discard this round, keep the best so far
         # accepted: record only what we actually keep, so the report matches the final résumé
         best_tex, best_ats, best_pdf = imp.tex, cand_ats, cand.pdf_path
         changes += imp.changes
         added += imp.added
+        # ponytail: last accepted pass's brief - that pass produced the résumé we ship;
+        # the full `changes` list still carries every kept pass.
+        summary = imp.summary or summary
         if best_ats.overall >= TARGET_ATS:
             break
 
@@ -90,6 +97,7 @@ def run_pipeline(
         ats_before=ats_before,
         ats_after=best_ats,
         changes=changes,
+        summary=summary,
         added=list(dict.fromkeys(added)),  # dedup, preserve order
         hiring_agent=hiring,
         warnings=warnings,

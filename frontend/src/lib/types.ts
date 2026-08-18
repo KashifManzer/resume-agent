@@ -22,6 +22,7 @@ export interface Report {
   ats_before: AtsScore
   ats_after: AtsScore
   changes: string[]
+  summary: string // T22: 2-3 line brief of what this round did
   added: string[]
   hiring_agent: HiringAgentReport | null
   warnings: string[]
@@ -107,6 +108,19 @@ export interface JobSummary {
   has_pdf: boolean
 }
 
+// One slip on the proof-rounds timeline (T22). Informational — the PDF is always
+// the latest round; `ats_delta` is null on round 0 (nothing to compare against).
+export interface RoundEntry {
+  index: number
+  kind: 'initial' | 'revision'
+  feedback: string | null
+  summary: string
+  ats_overall: number
+  ats_delta: number | null
+  changes: string[]
+  added: string[]
+}
+
 export interface Job {
   id: string
   status: JobStatus
@@ -114,6 +128,7 @@ export interface Job {
   result: PipelineResult | null
   error: string | null
   round: number
+  rounds: RoundEntry[] // T22: the full round history, oldest first
   apply_url: string | null // T16: the ATS apply form, when the JD came from a link
 }
 

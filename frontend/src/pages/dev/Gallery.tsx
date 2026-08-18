@@ -1,3 +1,4 @@
+import { RevisionLog } from '@/components/RevisionLog'
 import { EmptyState } from '@/components/states/EmptyState'
 import { ErrorState } from '@/components/states/ErrorState'
 import { InlineError } from '@/components/states/InlineError'
@@ -9,6 +10,7 @@ import { SectionHeading } from '@/components/ui/SectionHeading'
 import { Sheet } from '@/components/ui/Sheet'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Stamp } from '@/components/ui/Stamp'
+import type { RoundEntry } from '@/lib/types'
 
 // Dev-only component gallery (mounted only when import.meta.env.DEV — see App.tsx,
 // never in the nav or the prod bundle). One place to see + work the whole
@@ -21,6 +23,41 @@ function Spec({ name, children }: { name: string; children: React.ReactNode }) {
     </section>
   )
 }
+
+const ROUNDS: RoundEntry[] = [
+  {
+    index: 0,
+    kind: 'initial',
+    feedback: null,
+    summary:
+      'Condensed the summary to three lines around Go, Kubernetes and Terraform, and swapped the lead project for a JD-specific platform build.',
+    ats_overall: 91,
+    ats_delta: null,
+    changes: ['Rewrote the professional summary', 'Replaced the first project'],
+    added: ['Terraform'],
+  },
+  {
+    index: 1,
+    kind: 'revision',
+    feedback: 'lead with the platform work; tone down the AI/ML framing',
+    summary:
+      'Reordered the Viasat entry to open on infrastructure work and stripped AI/ML wording from the experience and projects sections.',
+    ats_overall: 88,
+    ats_delta: -3,
+    changes: ['Moved the Terraform/ArgoCD bullet to the top', "Removed 'AI-driven' from the agent bullet"],
+    added: [],
+  },
+  {
+    index: 2,
+    kind: 'revision',
+    feedback: 'add the on-call and incident response experience back in',
+    summary: 'Added an on-call rotation bullet under Viasat and surfaced incident response in the skills list.',
+    ats_overall: 93,
+    ats_delta: 5,
+    changes: ['Added an on-call/incident-response bullet'],
+    added: ['Incident response'],
+  },
+]
 
 export default function Gallery() {
   return (
@@ -66,6 +103,10 @@ export default function Gallery() {
         <div className="relative h-28">
           <Stamp className="absolute top-4 left-8" sub={<>one page · {new Date().getFullYear()}</>} />
         </div>
+      </Spec>
+
+      <Spec name="RevisionLog (T22 · proof rounds)">
+        <RevisionLog rounds={ROUNDS} warnings={['no change made - round not counted']} />
       </Spec>
 
       <Spec name="EmptyState">

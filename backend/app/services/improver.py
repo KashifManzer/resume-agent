@@ -1,4 +1,5 @@
-"""Improver: one AGGRESSIVE tailoring pass over a résumé's LaTeX.
+"""Improver: one tailoring pass over a résumé's LaTeX - AGGRESSIVE by default,
+DIRECTED when the caller passes the user's `feedback` (T22).
 
 Product decision: maximize ATS/JD match (target 95%+) — inject every required JD
 keyword (including current gaps), rewrite the summary tight, and swap the first
@@ -40,6 +41,16 @@ def reassemble(preamble: str, body: str, closing: str) -> str:
     return preamble + body + closing
 
 
+_OUTPUT_FMT = (
+    "Output EXACTLY this and nothing else:\n"
+    "===TEX===\n<the full rewritten LaTeX body>\n===END===\n"
+    "===CHANGES===\n"
+    '{"summary": "2-3 short sentences, plain English: what THIS pass did and why", '
+    '"changes": ["what you changed, one per item"], '
+    '"added": ["each skill / project / claim you ADDED that was not in the original"]}\n'
+    "===ENDCHANGES==="
+)
+
 _EDIT_SYS = (
     "You are an elite résumé writer optimizing a résumé to score 95%+ on ATS / "
     "JD-match for a specific job. Rewrite the LaTeX body to match the job as closely "
@@ -58,43 +69,69 @@ _EDIT_SYS = (
     "- Keep it to ONE page. Preserve the LaTeX structure, commands, and environments "
     "so it compiles. Do NOT touch anything outside the body you are given.\n"
     "- This is the user's own résumé; they will review and own every claim.\n"
-    "Output EXACTLY this and nothing else:\n"
-    "===TEX===\n<the full rewritten LaTeX body>\n===END===\n"
-    "===CHANGES===\n"
-    '{"changes": ["what you changed, one per item"], '
-    '"added": ["each skill / project / claim you ADDED that was not in the original"]}\n'
-    "===ENDCHANGES==="
-)
+) + _OUTPUT_FMT
+
+# T22: a human-directed revision is NOT an optimization pass. The person read the
+# résumé and said what to change, so their request outranks keyword coverage - and
+# the pass must not quietly undo it by re-stuffing what they asked to tone down.
+_REVISE_SYS = (
+    "You are an elite résumé writer applying a HUMAN'S DIRECTED REVISION to a résumé's "
+    "LaTeX body. The user has read this exact résumé and told you what to change. Rules:\n"
+    "- The user's request is AUTHORITATIVE. Apply it faithfully and visibly. It takes "
+    "precedence over JD-keyword coverage and over any match score - losing keyword "
+    "coverage is an acceptable price for doing what they asked.\n"
+    "- NEVER re-add, restore, or re-emphasize anything they asked you to remove or tone "
+    "down, no matter how strongly the job description calls for it.\n"
+    "- This is a revision, not a fresh rewrite: change what the request implies and leave "
+    "the rest of the résumé alone.\n"
+    "- Do NOT stuff in new keywords. Keep the coverage already there only where it does "
+    "not conflict with the request.\n"
+    "- Keep it to ONE page. Preserve the LaTeX structure, commands, and environments "
+    "so it compiles. Do NOT touch anything outside the body you are given.\n"
+    "- This is the user's own résumé; they will review and own every claim.\n"
+) + _OUTPUT_FMT
 
 
-def _parse_edit(resp: str) -> tuple[str, list[str], list[str]]:
+def _parse_edit(resp: str) -> tuple[str, list[str], list[str], str]:
     m = re.search(r"===TEX===\s*(.*?)\s*===END===", resp, re.S)
     if not m:
         raise ValueError("no ===TEX=== block in edit response")
     new_body = m.group(1)
     changes: list[str] = []
     added: list[str] = []
+    summary = ""
     cm = re.search(r"===CHANGES===\s*(.*?)\s*(?:===ENDCHANGES===|$)", resp, re.S)
     if cm:
         try:
             data = llm._loads(cm.group(1))
             changes = data.get("changes") or []
             added = data.get("added") or []
+            summary = data.get("summary") or ""
         except Exception:
             pass  # sentinels parsed; a malformed changes block just yields empty lists
-    return new_body, changes, added
+    return new_body, changes, added, summary
 
 
-def _edit_body(body: str, jd_text: str, ats: AtsScore, error: str | None = None):
-    user = (
-        f"JOB DESCRIPTION:\n{jd_text}\n\n"
-        f"REQUIRED JD KEYWORDS TO COVER: {ats.required_keywords}\n"
-        f"CURRENTLY MISSING — make sure these now appear in the résumé: {ats.missing}\n\n"
-        f"RÉSUMÉ BODY (LaTeX — rewrite ONLY this):\n{body}"
-    )
+def _edit_body(
+    body: str, jd_text: str, ats: AtsScore, error: str | None = None, feedback: str | None = None
+):
+    if feedback:
+        user = (
+            f"THE USER'S REVISION REQUEST - do exactly this:\n{feedback}\n\n"
+            f"JOB DESCRIPTION (context only - it does NOT override the request):\n{jd_text}\n\n"
+            f"RÉSUMÉ BODY (LaTeX - revise ONLY this):\n{body}"
+        )
+    else:
+        user = (
+            f"JOB DESCRIPTION:\n{jd_text}\n\n"
+            f"REQUIRED JD KEYWORDS TO COVER: {ats.required_keywords}\n"
+            f"CURRENTLY MISSING — make sure these now appear in the résumé: {ats.missing}\n\n"
+            f"RÉSUMÉ BODY (LaTeX — rewrite ONLY this):\n{body}"
+        )
     if error:
         user += f"\n\nYOUR PREVIOUS ATTEMPT FAILED: {error}\nReturn a corrected version."
-    resp = llm.chat([{"role": "system", "content": _EDIT_SYS}, {"role": "user", "content": user}])
+    system = _REVISE_SYS if feedback else _EDIT_SYS
+    resp = llm.chat([{"role": "system", "content": system}, {"role": "user", "content": user}])
     return _parse_edit(resp)
 
 
@@ -110,16 +147,20 @@ def _baseline(tex: str, **over) -> ImproveResult:
     )
 
 
-def improve(tex: str, jd_text: str, ats: AtsScore) -> ImproveResult:
-    """One aggressive tailoring pass. Returns a compile-validated, ≤1-page rewrite
-    that maximizes JD match + an `added` review list — or the untouched original if
-    no candidate compiles to one page (never ship a broken/2-page résumé)."""
+def improve(
+    tex: str, jd_text: str, ats: AtsScore, feedback: str | None = None
+) -> ImproveResult:
+    """One tailoring pass. Without `feedback`: the aggressive JD-match rewrite.
+    With `feedback`: a directed revision that honors the user's instruction over
+    keyword coverage (T22). Either way returns a compile-validated, ≤1-page rewrite
+    + an `added` review list - or the untouched original if no candidate compiles
+    to one page (never ship a broken/2-page résumé)."""
     preamble, body, closing = split_tex(tex)
     error: str | None = None
 
     for _ in range(1 + IMPROVER_COMPILE_RETRIES):
         try:
-            new_body, changes, added = _edit_body(body, jd_text, ats, error)
+            new_body, changes, added, summary = _edit_body(body, jd_text, ats, error, feedback)
         except Exception as e:
             error = f"could not parse the edit ({e})"
             continue
@@ -135,6 +176,7 @@ def improve(tex: str, jd_text: str, ats: AtsScore) -> ImproveResult:
             changed=True,
             changes=changes,
             added=added,
+            summary=summary,
             compiled=True,
             single_page=True,
         )

@@ -17,6 +17,7 @@ class Report(BaseModel):
     ats_before: AtsScore
     ats_after: AtsScore
     changes: list[str] = []
+    summary: str = ""  # T22: 2-3 line brief of what this round did, from the improver
     added: list[str] = []  # skills/projects/claims added by the aggressive rewrite — review list
     hiring_agent: HiringAgentReport | None = None  # None if the gate couldn't run
     warnings: list[str] = []
