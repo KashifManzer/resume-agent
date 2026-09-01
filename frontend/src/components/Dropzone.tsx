@@ -55,7 +55,11 @@ export function Dropzone({
         className={cn(
           // `grow` (basis auto) not `flex-1`: it keeps its natural height where the
           // column is auto-sized, and fills the slack where the caller gives it one.
-          'group relative flex grow cursor-pointer flex-col items-center justify-center gap-2 px-6 py-12 text-center transition-all outline-none',
+          // `min-h-0` matters on the locked Compose desk (T21): without it a flex
+          // item can't shrink past its own content, so any extra line above it
+          // pushes the Tailor CTA off the viewport. The drop copy gives way first
+          // — losing decoration beats losing the primary action.
+          'group relative flex min-h-0 grow cursor-pointer flex-col items-center justify-center gap-2 overflow-hidden px-6 py-12 text-center transition-all outline-none',
           'hover:-translate-y-0.5 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-desk',
           over && 'ring-2 ring-marigold',
         )}

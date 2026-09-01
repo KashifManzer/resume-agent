@@ -37,13 +37,13 @@ export function Compose() {
   const { data: resumes = [], isPending: resumesLoading } = useResumes()
   const entrance = useEntrance()
 
-  // pre-check the default library résumé once, without clobbering user edits
+  // pre-check the whole library once (the selector picks the JD-closest across
+  // all of them), without clobbering user edits
   useEffect(() => {
     if (selectedIds === null && resumes.length > 0) {
-      const def = resumes.find((r) => r.is_default) ?? resumes[0]
       // one-shot seed of the selection from the loaded library
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setSelectedIds([def.id])
+      setSelectedIds(resumes.map((r) => r.id))
     }
   }, [resumes, selectedIds])
 
@@ -164,7 +164,7 @@ export function Compose() {
         <motion.div variants={rise} className="flex flex-col gap-5 desk:min-h-0">
           <Eyebrow n="02">your sources · .tex files</Eyebrow>
 
-          {/* pick from the saved library (default pre-checked) — no forced re-upload.
+          {/* pick from the saved library (all pre-checked) — no forced re-upload.
               A long library scrolls here rather than pushing the button off-screen;
               the slack goes to the drop target below, not to a hole in the column. */}
           <div className="space-y-2 desk:max-h-[45%] desk:shrink-0 desk:overflow-y-auto">
@@ -192,7 +192,7 @@ export function Compose() {
                   ))}
                 </Sheet>
                 <p className="font-mono text-[11px] text-cream-soft">
-                  from your library — or upload a fresh one below (an upload takes precedence).
+                  all selected — we pick the closest; uncheck any to exclude. an upload wins.
                 </p>
               </>
             )}
