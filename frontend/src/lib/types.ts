@@ -121,6 +121,19 @@ export interface RoundEntry {
   added: string[]
 }
 
+// One application answer drafted for this run (T24). Grounded on THIS job's
+// tailored résumé, which is why it lives on the run rather than in the bank.
+export interface JobAnswer {
+  question: string
+  answer: string
+  source: 'bank_verbatim' | 'bank_adapted' | 'llm_fresh' | 'blank'
+  needs_review: boolean
+  canonical: string | null
+  reason: string | null
+  save_mode: AnswerMode // bank default if promoted: facts verbatim, prose adaptable
+  created_at: string
+}
+
 export interface Job {
   id: string
   status: JobStatus
@@ -130,6 +143,7 @@ export interface Job {
   round: number
   rounds: RoundEntry[] // T22: the full round history, oldest first
   apply_url: string | null // T16: the ATS apply form, when the JD came from a link
+  answers: JobAnswer[] // T24: answers drafted for this run, oldest first
 }
 
 export const OUTER_LOOP_MAX = 5

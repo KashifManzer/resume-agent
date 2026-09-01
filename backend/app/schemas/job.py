@@ -1,8 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from app.schemas.answer import AnswerResult, Mode
 from app.schemas.pipeline import PipelineResult
 
 JobStatus = Literal["queued", "running", "done", "error"]
@@ -22,6 +23,19 @@ class RoundEntry(BaseModel):
     added: list[str] = []
 
 
+class JobAnswer(AnswerResult):
+    """One drafted application answer on this run's log (T24). Grounded on THIS
+    job's tailored résumé, so it stays true to the résumé it accompanies - which
+    is why the log lives on the run and not in the cross-job answer bank."""
+
+    question: str
+    # Bank mode to default to IF the user promotes this for cross-job reuse:
+    # facts are about the person (safe verbatim), prose must stay adaptable so it
+    # gets re-grounded on each new job's résumé. Derived from the category.
+    save_mode: Mode = "adaptable"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class Job(BaseModel):
     id: str
     status: JobStatus = "queued"
@@ -31,6 +45,7 @@ class Job(BaseModel):
     round: int = 0  # completed improve rounds (0 = first pass), capped at OUTER_LOOP_MAX
     rounds: list[RoundEntry] = []  # T22: the full round history, oldest first
     apply_url: str | None = None  # T16: the ATS apply form, when the JD came from a link (not a paste)
+    answers: list[JobAnswer] = []  # T24: application answers drafted for this run, oldest first
 
 
 class JobSummary(BaseModel):

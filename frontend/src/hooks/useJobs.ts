@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import {
+  answerQuestion,
   ApiError,
   createJob,
   fetchJdFromUrl,
@@ -57,6 +58,17 @@ export function useJob(id: string | null) {
       const s = (q.state.data as Job | undefined)?.status
       return s === 'done' || s === 'error' ? false : 2000
     },
+  })
+}
+
+/** Draft an application answer for this run (T24). The server owns the per-job
+ *  log, so we refetch the job rather than keep a second copy client-side —
+ *  which is also what makes the log survive a reload. */
+export function useAnswerQuestion(id: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (question: string) => answerQuestion(id, question),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['job', id] }),
   })
 }
 

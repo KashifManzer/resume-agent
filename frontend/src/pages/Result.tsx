@@ -1,6 +1,6 @@
 import { motion } from 'motion/react'
 
-import { FeedbackBox } from '@/components/FeedbackBox'
+import { ApplicationCard } from '@/components/ApplicationCard'
 import { HiringAgentCard } from '@/components/HiringAgentCard'
 import { KeywordMarks } from '@/components/KeywordMarks'
 import { RevisionLog } from '@/components/RevisionLog'
@@ -13,12 +13,13 @@ import { Stamp } from '@/components/ui/Stamp'
 import { useSaveLocal } from '@/hooks/useJobs'
 import { downloadTex, pdfUrl } from '@/lib/api'
 import { rise, stagger, useEntrance } from '@/lib/motion'
-import type { PipelineResult, RoundEntry } from '@/lib/types'
+import type { JobAnswer, PipelineResult, RoundEntry } from '@/lib/types'
 
 export function Result({
   jobId,
   round,
   rounds,
+  answers,
   result,
   applyUrl,
   onStartOver,
@@ -26,6 +27,7 @@ export function Result({
   jobId: string
   round: number
   rounds: RoundEntry[]
+  answers: JobAnswer[]
   result: PipelineResult
   applyUrl: string | null
   onStartOver: () => void
@@ -186,13 +188,11 @@ export function Result({
             </motion.div>
           )}
 
-          {/* The round history sits directly above the revision box, so asking for
-              one and watching a new slip land on the log is a single motion. */}
+          {/* The round history sits directly above the card, so asking for a
+              revision and watching a new slip land on the log is a single motion. */}
           <RevisionLog rounds={rounds} warnings={report.warnings} />
 
-          <motion.div variants={rise}>
-            <FeedbackBox jobId={jobId} round={round} />
-          </motion.div>
+          <ApplicationCard jobId={jobId} round={round} answers={answers} />
         </div>
       </div>
     </motion.div>

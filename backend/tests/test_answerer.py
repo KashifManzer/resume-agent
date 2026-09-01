@@ -226,3 +226,32 @@ def test_answer_request_is_question_only():
     # Privacy: the request model carries ONLY question + job_id + host.
     from app.schemas.answer import AnswerRequest
     assert set(AnswerRequest.model_fields) == {"question", "job_id", "host"}
+
+
+# --- T24: the adapt path re-grounds instead of preserving --------------------
+
+
+def test_adapt_prompt_regrounds_on_current_resume_and_drops_unsupported(monkeypatch):
+    """A saved template is a STYLE guide, not a fact carrier: résumés are
+    re-tailored per job, so a claim template-A asserted may be absent from the
+    résumé this recruiter reads. The prompt must say DROP it, not preserve it."""
+    seen = {}
+
+    def fake_chat(messages, format=None):
+        seen["prompt"] = messages[1]["content"]
+        return {"answer": "drafted"}
+
+    monkeypatch.setattr(answerer.llm, "chat", fake_chat)
+    answerer._llm_answer("Why us?", "I led a 40-person platform team.", "JD TEXT", "RESUME TEX")
+
+    prompt = seen["prompt"]
+    assert "RESUME TEX" in prompt  # re-grounded on THIS job's tailored résumé
+    assert "DROP any template claim it does not support" in prompt
+    assert "preserve every fact" not in prompt.lower()
+
+
+def test_save_mode_defaults_by_category():
+    assert answerer.save_mode("notice_period") == "verbatim"  # a fact about the person
+    assert answerer.save_mode("why_company") == "adaptable"  # résumé-grounded prose
+    assert answerer.save_mode(None) == "adaptable"  # fresh draft → never frozen
+    assert answerer.save_mode("eeo_demographic") == "verbatim"  # never LLM-rewritten

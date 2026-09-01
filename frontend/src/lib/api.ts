@@ -2,6 +2,7 @@ import type {
   Answer,
   AnswerIn,
   Job,
+  JobAnswer,
   JobSummary,
   JdSource,
   Profile,
@@ -127,6 +128,19 @@ export async function sendFeedback(id: string, feedback: string): Promise<{ roun
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ feedback }),
+    }),
+  )
+  return res.json()
+}
+
+/** Draft an answer to an application question, grounded on this run's tailored
+ *  résumé (T24). Appends to the run's answers log server-side. */
+export async function answerQuestion(id: string, question: string): Promise<JobAnswer> {
+  const res = await ok(
+    await fetch(`/jobs/${id}/answer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question }),
     }),
   )
   return res.json()

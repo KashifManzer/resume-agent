@@ -1,22 +1,28 @@
 """Job API — the stable seam the frontend (T7) drives. POST a JD + résumé .tex
 files, poll status/result, request feedback rounds, download the final PDF."""
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from app import db
+from app.db import get_db
 from app.models import Profile, Resume
 from app.routers.profile import PID
-from app.schemas.job import Job, JobSummary
+from app.schemas.job import Job, JobAnswer, JobSummary
 from app.schemas.selector import ResumeInput
-from app.services import jobs, local_save, storage
+from app.services import answerer, jobs, local_save, storage
 
 router = APIRouter()
 
 
 class FeedbackIn(BaseModel):
     feedback: str
+
+
+class QuestionIn(BaseModel):
+    question: str
 
 
 def _resumes_from_library(resume_ids: list[str]) -> list[ResumeInput]:
@@ -82,6 +88,24 @@ def post_feedback(job_id: str, body: FeedbackIn, background: BackgroundTasks) ->
         raise HTTPException(status_code=429, detail="feedback limit reached")
     background.add_task(jobs.store.run, job_id)
     return {"job_id": job.id, "round": job.round}
+
+
+@router.post("/jobs/{job_id}/answer")
+def post_answer(job_id: str, body: QuestionIn, session: Session = Depends(get_db)) -> JobAnswer:
+    """Draft an answer to an application question (T24), grounded on THIS run's
+    tailored résumé, and append it to the run's answers log. Deliberately never
+    touches `round` — answering and revising are separate concerns."""
+    try:
+        job = jobs.store.get(job_id)
+    except jobs.JobNotFound:
+        raise HTTPException(status_code=404, detail="job not found")
+    question = body.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="ask a question")
+    res = answerer.answer(question, job_id, host="webapp", session=session)
+    entry = JobAnswer(**res.model_dump(), question=question, save_mode=answerer.save_mode(res.canonical))
+    job.answers.append(entry)
+    return entry
 
 
 @router.get("/jobs/{job_id}/pdf")

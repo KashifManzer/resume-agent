@@ -172,9 +172,14 @@ class _AnswerOut(BaseModel):
 def _llm_answer(question: str, template: str, jd: str, tex: str) -> str:
     """Draft or tailor one answer. Honesty is baked into the prompt: assert only
     facts present in the résumé/profile; unknown factual question → empty."""
+    # Adapt path (T24 hardening): a saved template is a STYLE guide, not a set of
+    # facts to preserve. Résumés are re-tailored per job, so a claim that was true
+    # of résumé A may be absent from the résumé this recruiter reads — drop it
+    # rather than assert something the page in their hand doesn't support.
     task = (
-        f"Tailor the applicant's template to this company/role. Preserve every fact in the "
-        f"template; do not invent new credentials.\nTemplate: {template!r}"
+        "Re-ground the applicant's saved template on THIS role and THIS résumé. Keep its style, "
+        "voice and intent, but assert ONLY claims the résumé below supports: DROP any template "
+        f"claim it does not support, and never invent new credentials.\nTemplate: {template!r}"
         if template.strip()
         else "Draft an answer grounded ONLY on the résumé below."
     )
@@ -228,6 +233,14 @@ def _default_resume_tex(session: Session) -> str:
 
 
 # --- the resolver's public entrypoint ---------------------------------------
+
+
+def save_mode(canonical: str | None) -> str:
+    """Bank mode to default to when promoting an answer for cross-job reuse (T24):
+    facts about the person are safe verbatim; anything else is résumé-grounded
+    prose, which must stay adaptable so it is re-grounded per job. A never-auto
+    answer is verbatim too — an LLM must never rewrite a demographic answer."""
+    return "verbatim" if canonical in NEVER_AUTO else ANSWER_CANONICAL.get(canonical or "", "adaptable")
 
 
 def answer(question: str, job_id: str | None, host: str, session: Session) -> AnswerResult:

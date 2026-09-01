@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.schemas.ats import AtsScore
 from app.schemas.pipeline import PipelineResult, Report
-from app.services import jobs
+from app.services import answerer, jobs
 
 
 @pytest.fixture
@@ -105,3 +105,44 @@ def test_feedback_new_round_then_cap(client):
         assert resp.status_code == 200
     over = client.post(f"/jobs/{job_id}/feedback", json={"feedback": "more"})
     assert over.status_code == 429
+
+
+# --- T24: application answers on the run ------------------------------------
+
+
+def test_answer_appends_to_job_log_and_never_costs_a_round(client, monkeypatch):
+    """Answering is a separate concern from revising: the log grows, `round` doesn't."""
+    monkeypatch.setattr(answerer, "_llm_classify", lambda q: None)
+    monkeypatch.setattr(answerer, "_llm_answer", lambda q, tmpl, jd, tex: f"drafted: {q}")
+    job_id = _post_job(client).json()["job_id"]
+
+    r = client.post(f"/jobs/{job_id}/answer", json={"question": "Why are you a fit for this role?"})
+    assert r.status_code == 200
+    assert r.json()["answer"].startswith("drafted:")
+    assert r.json()["needs_review"] is True  # every draft carries the review backstop
+
+    client.post(f"/jobs/{job_id}/answer", json={"question": "Describe a project you're proud of."})
+    job = client.get(f"/jobs/{job_id}").json()
+    assert [a["question"] for a in job["answers"]] == [
+        "Why are you a fit for this role?",
+        "Describe a project you're proud of.",
+    ]
+    assert job["round"] == 0  # answering never consumes a revision round
+
+
+def test_answer_save_mode_defaults_by_category(client, monkeypatch):
+    """Promotion default: a fact is safe verbatim; résumé-grounded prose must stay
+    adaptable so it is re-grounded on the next job's résumé."""
+    monkeypatch.setattr(answerer, "_llm_answer", lambda q, tmpl, jd, tex: "drafted")
+    job_id = _post_job(client).json()["job_id"]
+
+    fact = client.post(f"/jobs/{job_id}/answer", json={"question": "What is your notice period?"})
+    prose = client.post(f"/jobs/{job_id}/answer", json={"question": "Why do you want to work here?"})
+    assert fact.json()["save_mode"] == "verbatim"
+    assert prose.json()["save_mode"] == "adaptable"
+
+
+def test_answer_rejects_blank_and_missing_job(client):
+    job_id = _post_job(client).json()["job_id"]
+    assert client.post(f"/jobs/{job_id}/answer", json={"question": "   "}).status_code == 400
+    assert client.post("/jobs/nope/answer", json={"question": "hi"}).status_code == 404
