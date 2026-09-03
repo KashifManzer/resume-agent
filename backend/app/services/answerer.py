@@ -189,8 +189,12 @@ def _llm_answer(question: str, template: str, jd: str, tex: str) -> str:
             "content": (
                 "You draft an applicant's answer to a job screening question. Assert ONLY facts "
                 "present in the résumé/job description provided — never invent experience, numbers, "
-                "employers or credentials. If the question asks for a fact not in the résumé, return "
-                'an empty answer. First person, concise, no preamble. Reply JSON only.'
+                "employers or credentials. A question asking the applicant to DESCRIBE or EXPLAIN "
+                "their own work — a project, how they approached something, a challenge, what they "
+                "built — is answered from the real projects and roles on the résumé: draw on those, "
+                "do not refuse. Return an empty answer ONLY when the question asks for a specific "
+                "fact the résumé does not contain, or the résumé holds nothing relevant to it. "
+                'First person, concise, no preamble. Reply JSON only.'
             ),
         },
         {

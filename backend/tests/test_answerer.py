@@ -255,3 +255,24 @@ def test_save_mode_defaults_by_category():
     assert answerer.save_mode("why_company") == "adaptable"  # résumé-grounded prose
     assert answerer.save_mode(None) == "adaptable"  # fresh draft → never frozen
     assert answerer.save_mode("eeo_demographic") == "verbatim"  # never LLM-rewritten
+
+
+def test_behavioral_questions_are_answered_not_refused(monkeypatch):
+    """The never-invent guard is aimed at FACT lookups (certs, years, employers).
+    A 'describe a project you led' question must draft from the résumé's real
+    projects — refusing those made the answerer useless for the most common
+    application questions."""
+    seen = {}
+
+    def fake_chat(messages, format=None):
+        seen["system"] = messages[0]["content"]
+        return {"answer": "drafted"}
+
+    monkeypatch.setattr(answerer.llm, "chat", fake_chat)
+    answerer._llm_answer("Describe a project you led.", "", "JD", "RESUME")
+
+    system = seen["system"]
+    assert "DESCRIBE or EXPLAIN" in system and "do not refuse" in system
+    # the fact-lookup guard is still the trust boundary — it must stay narrow, not vanish
+    assert "never invent experience, numbers" in system
+    assert "empty answer ONLY when" in system
