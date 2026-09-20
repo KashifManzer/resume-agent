@@ -23,6 +23,8 @@ external/
 
 # user data: SQLite DB + uploaded résumé files (T11) — never commit
 backend/data/
+# stray SQLite files outside data/ (a wrong-path script once created backend/resume.db)
+*.db
 
 # local working tickets (for us, not shared)
 docs/tickets/

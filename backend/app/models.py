@@ -41,7 +41,7 @@ class Resume(Base):
     format: Mapped[str] = mapped_column(String, default="tex")  # tex|pdf|docx (docx later)
     filename: Mapped[str | None] = mapped_column(default=None)  # original upload name (display/download)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 class FieldMapping(Base):
@@ -57,7 +57,7 @@ class FieldMapping(Base):
     host: Mapped[str] = mapped_column(String, index=True)
     form_sig: Mapped[str] = mapped_column(String, index=True)  # order-independent hash of the field set
     mapping: Mapped[dict] = mapped_column(JSON, default=dict)  # {field_ref: {canonical, confidence}}
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 class Answer(Base):
@@ -77,7 +77,7 @@ class Answer(Base):
     question: Mapped[str | None] = mapped_column(String, default=None)  # custom entries carry their own text
     answer: Mapped[str] = mapped_column(String, default="")
     mode: Mapped[str] = mapped_column(String, default="verbatim")  # verbatim | adaptable
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 class AnswerResolution(Base):
@@ -92,4 +92,35 @@ class AnswerResolution(Base):
     host: Mapped[str] = mapped_column(String, index=True)
     question_sig: Mapped[str] = mapped_column(String, index=True)
     canonical: Mapped[str] = mapped_column(String)  # canonical key, or "" for no-match (fresh)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
+class TrackedCompany(Base):
+    __tablename__ = "tracked_companies"
+
+    slug: Mapped[str] = mapped_column(String, primary_key=True)
+    provider: Mapped[str] = mapped_column(String)  # ashby | greenhouse
+    discovery_source: Mapped[str] = mapped_column(String, default="manual")
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+
+
+class JobPosting(Base):
+    """Harvested ATS postings (T26).
+
+    Deliberately NOT scoped by profile_id, unlike every other table here. A job
+    opening is public reference data, identical for every user, so tenanting it
+    would duplicate the same rows per profile and multiply the harvest cost for
+    no benefit. When multi-user lands (T8), per-user state belongs in a separate
+    join table (saved/dismissed/applied), not in this one.
+    """
+
+    __tablename__ = "job_postings"
+
+    url: Mapped[str] = mapped_column(String, primary_key=True)
+    company_slug: Mapped[str] = mapped_column(String, ForeignKey("tracked_companies.slug"), index=True)
+    title: Mapped[str] = mapped_column(String)
+    location: Mapped[str | None] = mapped_column(String, default=None)
+    status: Mapped[str] = mapped_column(String, default="open")  # open | closed
+    # ATS publication time, not discovery time. Indexed for feed order/retention.
+    created_at: Mapped[datetime] = mapped_column(DateTime, index=True, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))

@@ -163,3 +163,20 @@ export function downloadTex(tex: string, filename = 'resume.tex') {
   a.click()
   URL.revokeObjectURL(url)
 }
+
+// --- board (T26) -----------------------------------------------------------
+
+import type { BoardFeedOut } from './types'
+
+export async function getBoardFeed(page: number = 1): Promise<BoardFeedOut> {
+  const url = `/board?page=${page}`
+  return (await ok(await fetch(url))).json()
+}
+
+export async function resolveBoardPosting(url: string): Promise<JdSource> {
+  return (await ok(await fetch('/board/resolve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  }))).json()
+}

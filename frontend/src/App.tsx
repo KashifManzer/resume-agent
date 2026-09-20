@@ -6,6 +6,7 @@ import { Guarantees } from './components/Guarantees'
 import { Onboarding } from './components/Onboarding'
 import { useSetupProgress } from './hooks/useSetup'
 import { Answers } from './pages/Answers'
+import { Board } from './pages/Board'
 import { Compose } from './pages/Compose'
 import { History } from './pages/History'
 import { Library } from './pages/Library'
@@ -32,7 +33,7 @@ function Home() {
     <>
       <Onboarding />
       {firstRun && <Guarantees />}
-      <Compose />
+      <Compose key={`${params.get('from') ?? ''}:${params.get('url') ?? ''}`} />
     </>
   )
 }
@@ -42,6 +43,7 @@ export default function App() {
     <Routes>
       <Route element={<AppShell />}>
         <Route path="/" element={<Home />} />
+        <Route path="/board" element={<Board />} />
         <Route path="/tailor/:jobId" element={<Tailor />} />
         <Route path="/library" element={<Library />} />
         <Route path="/profile" element={<Profile />} />

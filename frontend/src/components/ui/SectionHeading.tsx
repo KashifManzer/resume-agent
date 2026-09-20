@@ -15,10 +15,10 @@ export function SectionHeading({
   return (
     <header className="space-y-3">
       <Kicker>{kicker}</Kicker>
-      <h1 className="font-serif text-5xl font-medium tracking-[-0.02em] text-cream sm:text-6xl">
+      <h1 className="font-serif text-6xl font-medium tracking-[-0.02em] text-cream sm:text-7xl">
         {title}
       </h1>
-      {children && <p className="max-w-xl leading-relaxed text-cream-soft">{children}</p>}
+      {children && <p className="max-w-2xl text-lg leading-relaxed text-cream-soft">{children}</p>}
     </header>
   )
 }

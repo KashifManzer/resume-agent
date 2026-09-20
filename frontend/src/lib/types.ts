@@ -147,3 +147,19 @@ export interface Job {
 }
 
 export const OUTER_LOOP_MAX = 5
+
+export interface JobPostingOut {
+  url: string
+  company_slug: string
+  title: string
+  location: string | null
+  status: string
+  created_at: string
+  updated_at: string
+}
+
+export interface BoardFeedOut {
+  jobs: JobPostingOut[]
+  has_more: boolean
+  total_pages: number
+}

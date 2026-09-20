@@ -19,6 +19,14 @@ _UA = "Mozilla/5.0 (compatible; resume-agent/1.0; +jd-fetch)"
 class JdFetchError(Exception):
     """Bad/blocked URL or unfetchable page — surfaced as 4xx by the router."""
 
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class JdUnavailable(JdFetchError):
+    """Both the ATS and posting-page fallback confirm the posting is gone."""
+
 
 def _resolve_ips(host: str) -> set[str]:
     try:
@@ -64,7 +72,7 @@ def _guarded_get(url: str, *, transport: httpx.BaseTransport | None = None) -> b
                     url = urljoin(url, loc)
                     continue
                 if resp.status_code >= 400:
-                    raise JdFetchError(f"fetch failed: HTTP {resp.status_code}")
+                    raise JdFetchError(f"fetch failed: HTTP {resp.status_code}", status_code=resp.status_code)
                 total, chunks = 0, []
                 for chunk in resp.iter_bytes():
                     total += len(chunk)
@@ -81,17 +89,27 @@ def _guarded_get(url: str, *, transport: httpx.BaseTransport | None = None) -> b
 
 def fetch_jd_from_url(url: str) -> JdSource:
     url = url.strip()
+    ats_missing = False
     for adapter in jd_adapters.ADAPTERS:
         if adapter.match(url):
             try:
-                return adapter.parse(json.loads(_guarded_get(adapter.api_url(url))), url)
-            except (JdFetchError, ValueError):
+                data = json.loads(_guarded_get(adapter.api_url(url)))
+                if not isinstance(data, dict):
+                    raise ValueError("invalid ATS posting: expected an object")
+                return adapter.parse(data, url)
+            except (JdFetchError, ValueError) as e:
                 # The public API can 404 even when the posting is live — e.g. an
                 # UNLISTED/confidential posting (reachable by direct link, absent
                 # from the API), an API disabled for that org, or an outage. The
                 # posting PAGE still carries the JD, so fall back to scraping it.
+                ats_missing = isinstance(e, JdFetchError) and e.status_code in (404, 410)
                 break
-    return _generic(url)
+    try:
+        return _generic(url)
+    except JdFetchError as e:
+        if ats_missing and e.status_code in (404, 410):
+            raise JdUnavailable("This job is no longer available.", status_code=410) from e
+        raise
 
 
 def _generic(url: str) -> JdSource:

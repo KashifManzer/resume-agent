@@ -7,6 +7,7 @@ import {
   fetchJdFromUrl,
   getJob,
   listJobs,
+  resolveBoardPosting,
   saveLocal,
   sendFeedback,
 } from '@/lib/api'
@@ -31,6 +32,31 @@ export function useCreateJob() {
 /** Fetch a JD from a job link (T10). Caller fills the editable JD field on success. */
 export function useJdFromUrl() {
   return useMutation({ mutationFn: (url: string) => fetchJdFromUrl(url) })
+}
+
+/** A URL handoff fetches once per visit, without an effect/mutation double-run
+ * in StrictMode. No focus refetch may overwrite someone's work in Compose. */
+export function useJdHandoff(url: string, fromBoard: boolean) {
+  const qc = useQueryClient()
+  return useQuery({
+    queryKey: ['jd-handoff', fromBoard, url],
+    queryFn: async () => {
+      try {
+        return await (fromBoard ? resolveBoardPosting(url) : fetchJdFromUrl(url))
+      } catch (error) {
+        if (fromBoard && error instanceof ApiError && [404, 410].includes(error.status)) {
+          void qc.invalidateQueries({ queryKey: ['board'] })
+        }
+        throw error
+      }
+    },
+    enabled: !!url,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: 'always',
+    gcTime: 0,
+  })
 }
 
 /** All past runs for the History section (T14). */

@@ -92,6 +92,26 @@ def test_lever_parse_uses_plain_description():
     assert src.adapter == "lever"
 
 
+def test_lever_list_only_posting_contains_responsibilities_and_requirements():
+    # Live Binance posting 6fff9a51-f9e7-4d91-99b6-bf0e6add4708 had empty
+    # descriptionPlain and all its role text in lists (verified 2026-09-19).
+    src = A.by_name("lever").parse({
+        "descriptionPlain": "",
+        "lists": [{"text": "Responsibilities", "content": "<ul><li>Build APIs</li><li>Test software</li></ul>"},
+                  {"text": "Requirements", "content": "<div>Java &amp; MySQL<br>Distributed systems</div>"}],
+        "additionalPlain": "Remote work available.",
+    }, "https://jobs.lever.co/acme/1")
+    assert src.text == "Responsibilities\n\nBuild APIs\nTest software\n\nRequirements\n\nJava & MySQL\nDistributed systems\n\nRemote work available."
+
+
+def test_lever_description_is_not_duplicated_and_html_fallback_is_readable():
+    src = A.by_name("lever").parse({
+        "descriptionPlain": "Opening and body", "openingPlain": "Opening", "descriptionBodyPlain": "body",
+        "lists": [], "additional": "<div>Closing &amp; benefits</div>",
+    }, "https://jobs.lever.co/acme/1")
+    assert src.text == "Opening and body\n\nClosing & benefits"
+
+
 def test_ashby_parse_filters_board_by_jid():
     a = A.by_name("ashby")
     src = a.parse(json.loads(_fixture("ashby.json")), "https://jobs.ashbyhq.com/acme/aaa-111")

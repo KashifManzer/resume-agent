@@ -30,12 +30,13 @@ export default defineConfig({
       '/jobs': BACKEND,
       '/jd': BACKEND,
       '/resumes': BACKEND,
-      // /profile and /answers are ALSO client-side routes (T14). A full-page
+      // /profile, /answers, and /board are ALSO client-side routes. A full-page
       // load of one must serve the SPA, not the API JSON — so proxy them only
       // for XHR/fetch (Accept: */*), never for a browser navigation (Accept:
       // text/html). The other paths never clash with a route.
       '/profile': SPA_SAFE,
       '/answers': SPA_SAFE,
+      '/board': SPA_SAFE,
     },
   },
 })

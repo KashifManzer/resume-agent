@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { motion } from 'motion/react'
 
 import { Dropzone } from '@/components/Dropzone'
@@ -8,7 +8,8 @@ import { Button } from '@/components/ui/button'
 import { Kicker } from '@/components/ui/Kicker'
 import { Sheet } from '@/components/ui/Sheet'
 import { Textarea } from '@/components/ui/textarea'
-import { useCreateJob, useJdFromUrl } from '@/hooks/useJobs'
+import { useCreateJob, useJdFromUrl, useJdHandoff } from '@/hooks/useJobs'
+import { ApiError } from '@/lib/api'
 import { useResumes } from '@/hooks/useProfile'
 import { markTailored } from '@/hooks/useSetup'
 import { rise, stagger, useEntrance } from '@/lib/motion'
@@ -28,12 +29,22 @@ function Eyebrow({ n, children }: { n: string; children: React.ReactNode }) {
 // matter how long the JD is. Anything smaller falls back to natural scroll.
 export function Compose() {
   const navigate = useNavigate()
-  const [jd, setJd] = useState('')
-  const [link, setLink] = useState('')
+  const [params] = useSearchParams()
+  const initialUrl = params.get('url') || ''
+  const [draft, setJd] = useState<string | null>(null)
+  const [link, setLink] = useState(initialUrl)
   const [files, setFiles] = useState<File[]>([])
   const [selectedIds, setSelectedIds] = useState<string[] | null>(null) // null = not yet seeded
   const create = useCreateJob()
   const jdFetch = useJdFromUrl()
+  const fromBoard = params.get('from') === 'board'
+  const handoff = useJdHandoff(initialUrl, fromBoard)
+  const source = jdFetch.data ?? handoff.data
+  // Only a pristine field follows the automatic result. Even an intentional
+  // edit to an empty string must survive a slow fetch or a retry.
+  const jd = draft ?? source?.text ?? ''
+  const unavailable = handoff.error instanceof ApiError && [404, 410].includes(handoff.error.status)
+
   const { data: resumes = [], isPending: resumesLoading } = useResumes()
   const entrance = useEntrance()
 
@@ -56,13 +67,13 @@ export function Compose() {
 
   // ad-hoc upload wins if present; otherwise run from the library selection
   const canSubmit =
-    jd.trim().length > 20 && (files.length > 0 || selected.length > 0) && !create.isPending
+    jd.trim().length > 20 && (files.length > 0 || selected.length > 0) && !create.isPending && !handoff.isFetching
 
   function submit() {
     if (!canSubmit) return
     // T16: carry the adapter's apply URL (only set when the JD came from a link)
     // so the Result page can offer one-click "Apply with this résumé".
-    const applyUrl = jdFetch.data?.apply_url ?? null
+    const applyUrl = source?.apply_url ?? null
     const payload = files.length > 0 ? { jd, files, applyUrl } : { jd, resumeIds: selected, applyUrl }
     create.mutate(payload, {
       onSuccess: (r) => {
@@ -111,6 +122,27 @@ export function Compose() {
 
           {/* paste a job link → fills the JD field (Workday · Greenhouse · Lever · Ashby, else generic) */}
           <div className="shrink-0 space-y-2">
+            {initialUrl && !jdFetch.data && (
+              <>
+                {handoff.isFetching && (
+                  <p role="status" className="font-mono text-xs text-cream-soft">
+                    {fromBoard ? 'Checking this posting and fetching its description…' : 'Fetching the job description…'}
+                  </p>
+                )}
+                {handoff.isError && (
+                  <div role="alert" className="space-y-2 border-l-2 border-gap-hi pl-3 py-1">
+                    <p className="font-mono text-xs text-gap-hi">{handoff.error.message}</p>
+                    <div className="flex items-center gap-4 font-mono text-xs">
+                      {!unavailable && (
+                        <button type="button" onClick={() => void handoff.refetch()} disabled={handoff.isFetching}
+                          className="text-cream underline underline-offset-4 disabled:opacity-40">Retry</button>
+                      )}
+                      {fromBoard && <Link to="/board" className="text-marigold underline underline-offset-4">Back to Board</Link>}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
             <div className="flex gap-2">
               <input
                 type="url"
@@ -133,13 +165,13 @@ export function Compose() {
                 {(jdFetch.error as Error).message}
               </p>
             )}
-            {jdFetch.data && (
+            {source && (
               <p className="font-mono text-xs text-cream-soft">
-                filled from <span className="text-marigold">{jdFetch.data.adapter}</span>
-                {jdFetch.data.title ? ` · ${jdFetch.data.title}` : ''} — review &amp; edit below before running.
+                filled from <span className="text-marigold">{source.adapter}</span>
+                {source.title ? ` · ${source.title}` : ''} — review &amp; edit below before running.
               </p>
             )}
-            {jdFetch.data?.warnings?.map((w) => (
+            {source?.warnings?.map((w) => (
               <p key={w} className="font-mono text-xs text-gap-hi">
                 ⚠ {w}
               </p>

@@ -12,5 +12,5 @@ export function Kicker({
   children: React.ReactNode
 }) {
   const ink = tone === 'gap' ? 'text-gap-hi' : 'text-marigold'
-  return <p className={cn('font-mono text-xs tracking-[0.34em] uppercase', ink, className)}>{children}</p>
+  return <p className={cn('font-mono text-sm tracking-[0.34em] uppercase', ink, className)}>{children}</p>
 }

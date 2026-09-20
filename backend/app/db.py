@@ -37,6 +37,15 @@ def _add_missing_columns(model) -> None:
                 conn.execute(text(f'ALTER TABLE {table} ADD COLUMN "{col.name}" {coltype}'))
 
 
+def _create_missing_indexes() -> None:
+    """create_all builds a table's indexes only when it creates the table, so an
+    index added to an existing model would never appear on an existing db file.
+    ponytail: same dev-grade migration posture as _add_missing_columns."""
+    for table in Base.metadata.tables.values():
+        for index in table.indexes:
+            index.create(bind=engine, checkfirst=True)
+
+
 def init_db() -> None:
     """Create tables and seed the single profile_id='default' row + the answer-
     bank canonical core (T13). Idempotent."""
@@ -46,6 +55,7 @@ def init_db() -> None:
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(engine)
     _add_missing_columns(models.Profile)  # dev-grade migration for an existing db file
+    _create_missing_indexes()  # create_all only builds indexes alongside a NEW table
     with SessionLocal() as s:
         if s.get(models.Profile, "default") is None:
             s.add(models.Profile(id="default"))
