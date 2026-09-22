@@ -2,9 +2,7 @@ import { lazy, Suspense } from 'react'
 import { Navigate, Route, Routes, useSearchParams } from 'react-router-dom'
 
 import { AppShell } from './AppShell'
-import { Guarantees } from './components/Guarantees'
 import { Onboarding } from './components/Onboarding'
-import { useSetupProgress } from './hooks/useSetup'
 import { Answers } from './pages/Answers'
 import { Board } from './pages/Board'
 import { Compose } from './pages/Compose'
@@ -18,21 +16,20 @@ import { Tailor } from './pages/Tailor'
 // from the prod build — never in the bundle, never in the nav.
 const Gallery = import.meta.env.DEV ? lazy(() => import('./pages/dev/Gallery')) : null
 
-// Home = the first-run intro (checklist + trust band) above the Compose brief.
-// Both intro pieces hang off the same signal: while setup is incomplete this is
-// a taller, naturally-scrolling orientation page; once it's done they're gone and
-// Compose is a viewport-locked working screen (T21). Preserves the pre-router
-// reload-resume link: an old ?job=… lands you back on that run's /tailor route.
+// Home = the first-run checklist above the Compose brief. While setup is
+// incomplete this is a taller, naturally-scrolling orientation page; once it's
+// done the checklist goes and Compose is a viewport-locked working screen (T21).
+// Preserves the pre-router reload-resume link: an old ?job=… lands you back on
+// that run's /tailor route.
+// The four-pillar Guarantees band that used to sit here was removed in T27 —
+// recover it from git history if the landing page ever wants it back.
 function Home() {
   const [params] = useSearchParams()
-  const setup = useSetupProgress()
-  const firstRun = setup !== null && setup.some((done) => !done)
   const legacy = params.get('job')
   if (legacy) return <Navigate to={`/tailor/${legacy}`} replace />
   return (
     <>
       <Onboarding />
-      {firstRun && <Guarantees />}
       <Compose key={`${params.get('from') ?? ''}:${params.get('url') ?? ''}`} />
     </>
   )
