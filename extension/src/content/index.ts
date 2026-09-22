@@ -4,13 +4,14 @@
 import { FILL_THRESHOLD } from '../shared/config'
 import { sendToBackground } from '../shared/messaging'
 import type { AnswerResult, FillResult, Mapping, PdfPayload, PlanItem, Profile } from '../shared/types'
-import { alreadyFilled, anyChecked, applyPlan, fillComboboxes, fitMaxLength, isCombobox, selectRadio, setNativeValue } from './apply'
+import { acceptsFreeText, alreadyFilled, anyChecked, applyPlan, fillComboboxes, fitMaxLength, isCombobox, selectRadio, reapplyValue, setNativeValue } from './apply'
 import { decideChoice } from './choice-answer'
 import { detectRadioGroups } from './choices'
 import type { DetectedField } from './detector'
 import { detectFields, pageSig } from './detector'
 import { mapAll } from './mapper'
 import { planFill, reverseCanonical } from './plan'
+import { userTouched, watchTakeover } from './takeover'
 import { focusField, renderProofMarks } from './proofmarks'
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -44,6 +45,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 })
 
 async function fill(jobId: string | null): Promise<FillResult> {
+  // From here on the user outranks us: a real keystroke, click, wheel or touch
+  // stands the remaining fill down. A Greenhouse pass can run for a minute
+  // (16 comboboxes x up to 4s, then one backend call per free-text field), and
+  // the user starts correcting long before it ends.
+  watchTakeover()
   const fields = detectFields(document)
   if (fields.length === 0) return empty('No application form detected on this page.')
 
@@ -93,7 +99,7 @@ async function fill(jobId: string | null): Promise<FillResult> {
 
 /** The live element for a field descriptor — re-queried by id/name so a form
  *  that swapped the DOM node out (an ATS re-render) is still reachable. */
-function liveElement(f: DetectedField): HTMLInputElement | HTMLTextAreaElement | null {
+function liveElement(f: DetectedField): HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null {
   const d = f.descriptor
   const byId = d.id && document.getElementById(d.id)
   if (byId) return byId as HTMLInputElement
@@ -117,7 +123,16 @@ function reassertFills(fields: DetectedField[], plan: PlanItem[]): void {
       const f = byRef.get(item.field_ref)
       const el = f && liveElement(f)
       if (el && isCombobox(el)) continue // comboboxes are re-driven by their own pass, never a raw re-write
-      if (el && el.value.trim() === '') setNativeValue(el, item.value)
+      // A field the user touched is theirs. Re-writing "any empty field" meant
+      // clearing a wrong autofill to retype it got the wrong value put straight
+      // back, for the full 8s this observer runs.
+      if (el && (userTouched(el) || el === document.activeElement)) continue
+      if (!el || el.value.trim() !== '') continue
+      // A <select> needs option matching, not a raw write: `item.value` is the
+      // DISPLAY text ("Canada"), and assigning that to a select sets
+      // selectedIndex -1 and blanks the control - so re-asserting after an ATS
+      // re-render would silently destroy a correct selection.
+      reapplyValue(el, item.value)
     }
   }
   let timer = 0
@@ -226,9 +241,26 @@ async function answerFreeText(fields: DetectedField[], plan: PlanItem[], jobId: 
   const byRef = new Map(fields.map((f) => [f.descriptor.field_ref, f.el]))
   for (const item of plan) {
     if (item.action !== 'answer') continue
-    const el = byRef.get(item.field_ref) as HTMLInputElement | HTMLTextAreaElement | undefined
-    if (!el) {
+    const node = byRef.get(item.field_ref)
+    if (!node) {
       item.action = 'flag'
+      continue
+    }
+    // A dropdown holds a FIXED option list, so a drafted sentence is never a valid
+    // value there. The option-matching drivers in apply.ts only handle action
+    // 'fill', so an 'answer' item reaches neither of them and would be written raw.
+    if (!acceptsFreeText(node)) {
+      item.action = 'blank'
+      item.reason = 'a dropdown - pick this one yourself'
+      continue
+    }
+    const el = node as HTMLInputElement | HTMLTextAreaElement
+    // Never type into the box the user is working in, or one they have already
+    // touched - `alreadyFilled` only catches a field with text still in it, so a
+    // field they just CLEARED to retype would otherwise be written under them.
+    if (el === document.activeElement || userTouched(el)) {
+      item.action = 'blank'
+      item.reason = 'left for you - you were editing'
       continue
     }
     if (alreadyFilled(el)) {

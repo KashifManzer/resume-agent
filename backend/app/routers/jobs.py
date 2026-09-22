@@ -102,7 +102,7 @@ def post_answer(job_id: str, body: QuestionIn, session: Session = Depends(get_db
     question = body.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="ask a question")
-    res = answerer.answer(question, job_id, host="webapp", session=session)
+    res = answerer.answer(question, job_id, host=answerer.WEBAPP_HOST, session=session)
     entry = JobAnswer(**res.model_dump(), question=question, save_mode=answerer.save_mode(res.canonical))
     job.answers.append(entry)
     return entry

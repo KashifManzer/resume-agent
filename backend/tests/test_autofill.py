@@ -200,3 +200,47 @@ def test_correct_endpoint_is_structure_only_and_serves_from_cache(monkeypatch):
     assert r.status_code == 200 and r.json() == {"ok": True}
     served = c.post("/autofill/map", json={"host": "ep.example", "fields": fields}).json()["mappings"]
     assert served[0]["canonical"] == "linkedin" and served[0]["source"] == "cache"
+
+
+# --- a dropdown is never free_text ------------------------------------------
+
+
+def test_dropdown_is_never_mapped_to_free_text(monkeypatch):
+    """Greenhouse has no education canonical, so the LLM labels School / Degree
+    `free_text` — and `free_text` routes to the answerer, whose drafted prose was
+    then written straight into the control. The client guards this too; coercing
+    here keeps the CACHE clean, which is what makes the fix stick across runs.
+
+    Verified live: 2445 of ~2831 cached Greenhouse field mappings are free_text,
+    and Greenhouse renders every dropdown as `<input type=text role=combobox>`.
+    """
+    monkeypatch.setattr(
+        llm, "chat",
+        lambda *a, **k: {"mappings": [
+            {"field_ref": 0, "canonical": "free_text"},
+            {"field_ref": 1, "canonical": "free_text"},
+            {"field_ref": 2, "canonical": "free_text"},
+            {"field_ref": 3, "canonical": "free_text"},
+        ]},
+    )
+    out = field_map._llm_map([
+        fd(0, tag="combobox", type="combobox", id="school--0", label="School"),
+        fd(1, tag="select", type="select", label="Degree"),
+        fd(2, tag="textarea", type="textarea", label="Why do you want to work here?"),
+        fd(3, tag="input", type="text", label="Describe a project"),
+    ])
+    assert out[0] == "unknown"  # combobox — a drafted sentence is not a legal value
+    assert out[1] == "unknown"  # native select — same
+    assert out[2] == "free_text"  # a real essay box is untouched by the guard
+    assert out[3] == "free_text"  # Ashby renders short answers as <input type=text>
+
+
+def test_dropdown_keeps_a_real_canonical(monkeypatch):
+    """The guard is narrow: it only rejects free_text. A dropdown that genuinely
+    asks for a mappable field still maps, so country/state selects keep working."""
+    monkeypatch.setattr(
+        llm, "chat",
+        lambda *a, **k: {"mappings": [{"field_ref": 0, "canonical": "location"}]},
+    )
+    out = field_map._llm_map([fd(0, tag="combobox", type="combobox", label="Country")])
+    assert out[0] == "location"

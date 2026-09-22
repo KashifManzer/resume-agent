@@ -113,7 +113,7 @@ def test_feedback_new_round_then_cap(client):
 def test_answer_appends_to_job_log_and_never_costs_a_round(client, monkeypatch):
     """Answering is a separate concern from revising: the log grows, `round` doesn't."""
     monkeypatch.setattr(answerer, "_llm_classify", lambda q: None)
-    monkeypatch.setattr(answerer, "_llm_answer", lambda q, tmpl, jd, tex: f"drafted: {q}")
+    monkeypatch.setattr(answerer, "_llm_answer", lambda q, tmpl, jd, tex, **kw: f"drafted: {q}")
     job_id = _post_job(client).json()["job_id"]
 
     r = client.post(f"/jobs/{job_id}/answer", json={"question": "Why are you a fit for this role?"})
@@ -133,7 +133,7 @@ def test_answer_appends_to_job_log_and_never_costs_a_round(client, monkeypatch):
 def test_answer_save_mode_defaults_by_category(client, monkeypatch):
     """Promotion default: a fact is safe verbatim; résumé-grounded prose must stay
     adaptable so it is re-grounded on the next job's résumé."""
-    monkeypatch.setattr(answerer, "_llm_answer", lambda q, tmpl, jd, tex: "drafted")
+    monkeypatch.setattr(answerer, "_llm_answer", lambda q, tmpl, jd, tex, **kw: "drafted")
     job_id = _post_job(client).json()["job_id"]
 
     fact = client.post(f"/jobs/{job_id}/answer", json={"question": "What is your notice period?"})

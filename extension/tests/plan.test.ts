@@ -151,3 +151,33 @@ describe('reverseCanonical (T19 learning loop: infer the category from a landed 
     expect(reverseCanonical('', profile)).toBe(null)
   })
 })
+
+describe('free_text never targets a dropdown (Phase 1)', () => {
+  // Greenhouse has no education canonical, so the backend LLM labels School /
+  // Degree / Discipline `free_text` at confidence 0.8 - above FILL_THRESHOLD.
+  // Planning an 'answer' for those wrote a drafted sentence straight into a
+  // react-select combobox. Verified live: 2445 of ~2831 cached Greenhouse field
+  // mappings are free_text, so this is the dominant path on that ATS.
+  test('a combobox mapped free_text is blanked and flagged, never answered', () => {
+    const items = plan([d(0, { tag: 'combobox', type: 'combobox', id: 'school--0', label: 'School' })], [mp(0, 'free_text', 0.8)])
+    expect(items[0].action).toBe('blank')
+    expect(items[0].action).not.toBe('answer')
+    expect(items[0].reason).toMatch(/dropdown/i)
+  })
+
+  test('a native <select> mapped free_text is blanked too', () => {
+    const items = plan([d(0, { tag: 'select', type: 'select', label: 'Degree' })], [mp(0, 'free_text', 0.8)])
+    expect(items[0].action).toBe('blank')
+  })
+
+  test('a real textarea question is STILL answered (the fix must not break screening answers)', () => {
+    const items = plan([d(0, { tag: 'textarea', type: 'textarea', label: 'Why do you want to work here?' })], [mp(0, 'free_text', 0.6)])
+    expect(items[0].action).toBe('answer')
+  })
+
+  test('a plain text input mapped free_text is STILL answered', () => {
+    // Ashby renders short-answer questions as <input type=text>, not textarea.
+    const items = plan([d(0, { tag: 'input', type: 'text', label: 'Describe a project' })], [mp(0, 'free_text', 0.8)])
+    expect(items[0].action).toBe('answer')
+  })
+})

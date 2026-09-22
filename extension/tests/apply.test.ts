@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { alreadyFilled, applyPlan, fillCombobox, fitMaxLength, pickOption, setNativeValue, setSelectValue } from '../src/content/apply'
+import { acceptsFreeText, alreadyFilled, applyPlan, fillCombobox, fitMaxLength, pickOption, reapplyValue, setNativeValue, setSelectValue } from '../src/content/apply'
 import type { DetectedField } from '../src/content/detector'
 import type { PlanItem } from '../src/shared/types'
 import { bare } from './util'
@@ -24,13 +24,18 @@ describe('setNativeValue (React-controlled inputs need dispatched events)', () =
     expect(el.value).toBe('line one\nline two')
   })
 
-  test('drives a <select> — the generic write path covers dropdowns (T19)', () => {
+  test('reaches the <select> prototype — but callers must NOT use it on a dropdown', () => {
     document.body.innerHTML =
       '<select id="s"><option value="">—</option><option value="us">United States</option></select>'
     const el = document.getElementById('s') as HTMLSelectElement
     const seen: string[] = []
     el.addEventListener('change', (e) => seen.push(`change:${e.bubbles}`))
-    setNativeValue(el, 'us') // matching an <option> value is P2's job; the write path is generic now
+    // setNativeValue is genuinely generic over the three value protos, and that
+    // branch needs covering. It is NOT a licence to write a dropdown directly:
+    // `us` works here only because it is an exact option VALUE. Real callers go
+    // through setSelectValue / reapplyValue, because assigning display text
+    // ("Canada") sets selectedIndex -1 and blanks the control.
+    setNativeValue(el, 'us')
     expect(el.value).toBe('us')
     expect(el.selectedIndex).toBe(1)
     expect(seen).toEqual(['change:true'])
@@ -210,5 +215,88 @@ describe('free-text answer guards (T13)', () => {
     const free = document.getElementById('u') as HTMLTextAreaElement
     expect(fitMaxLength(capped, 'abcdefgh')).toBe('abcde')
     expect(fitMaxLength(free, 'abcdefgh')).toBe('abcdefgh')
+  })
+})
+
+describe('acceptsFreeText (Phase 1: a dropdown never receives a drafted sentence)', () => {
+  const el = (html: string): Element => {
+    document.body.innerHTML = html
+    return document.body.firstElementChild!
+  }
+
+  test('plain text input and textarea accept free text', () => {
+    expect(acceptsFreeText(el('<input type="text" />'))).toBe(true)
+    expect(acceptsFreeText(el('<textarea></textarea>'))).toBe(true)
+  })
+
+  test('native <select> does NOT - a raw write sets selectedIndex -1 and blanks it', () => {
+    expect(acceptsFreeText(el('<select><option>a</option></select>'))).toBe(false)
+  })
+
+  test('Workday-style button combobox does NOT', () => {
+    expect(acceptsFreeText(el('<button aria-haspopup="listbox">Select One</button>'))).toBe(false)
+  })
+
+  test('REAL Greenhouse react-select School input does NOT (verbatim live markup)', () => {
+    // Captured 2026-09-22 from job-boards.greenhouse.io/discord/jobs/8806163002.
+    // It is an <input type=text>, so setNativeValue SUCCEEDS and leaves visible
+    // prose - the exact reported bug. role=combobox is the only tell.
+    const school = el(
+      '<input class="select__input" id="school--0" type="text" aria-autocomplete="list" ' +
+        'aria-haspopup="true" aria-labelledby="school--0-label" role="combobox" value="" />',
+    )
+    expect(school.tagName).toBe('INPUT') // not a <select> - the old select-only guard would miss it
+    expect(acceptsFreeText(school)).toBe(false)
+  })
+})
+
+describe('the real Greenhouse education fields are recognised as dropdowns', () => {
+  test('School / Degree / Discipline all reject free text; the essay questions still accept it', async () => {
+    const { loadFixture } = await import('./util')
+    const { detectFields } = await import('../src/content/detector')
+    loadFixture('greenhouse.html')
+    const fields = detectFields(document)
+
+    for (const id of ['school--0', 'degree--0', 'discipline--0']) {
+      const f = fields.find((x) => x.descriptor.id === id)
+      expect(f, `${id} must be detected`).toBeTruthy()
+      expect(f!.descriptor.tag).toBe('combobox')
+      expect(acceptsFreeText(f!.el), `${id} must reject free text`).toBe(false)
+    }
+    // regression guard: the genuine free-text question must STILL be writable,
+    // or the fix would break ordinary screening answers.
+    const why = fields.find((x) => x.descriptor.id === 'q_why')!
+    expect(acceptsFreeText(why.el)).toBe(true)
+  })
+})
+
+describe('reapplyValue (re-assert after an ATS re-render)', () => {
+  test('a <select> is option-matched, never raw-written', () => {
+    document.body.innerHTML =
+      '<select id="s"><option value="">-</option><option value="ca">Canada</option></select>'
+    const el = document.getElementById('s') as HTMLSelectElement
+    reapplyValue(el, 'Canada') // the DISPLAY text, which is what the plan stores
+    expect(el.value).toBe('ca')
+    expect(el.selectedIndex).toBe(1)
+  })
+
+  test('an unmatched value leaves the <select> alone instead of blanking it', () => {
+    // the regression: setNativeValue('Canada') on a select sets selectedIndex -1,
+    // so re-asserting after a re-render would silently destroy the selection.
+    document.body.innerHTML =
+      '<select id="s"><option value="">-</option><option value="fr">France</option></select>'
+    const el = document.getElementById('s') as HTMLSelectElement
+    el.value = 'fr'
+    reapplyValue(el, 'Germany')
+    expect(el.value).toBe('fr') // untouched, not blanked
+    expect(el.selectedIndex).not.toBe(-1)
+  })
+
+  test('inputs and textareas still take the plain write', () => {
+    document.body.innerHTML = '<input id="i" /><textarea id="t"></textarea>'
+    reapplyValue(document.getElementById('i') as HTMLInputElement, 'ada@analytical.io')
+    reapplyValue(document.getElementById('t') as HTMLTextAreaElement, 'some prose')
+    expect((document.getElementById('i') as HTMLInputElement).value).toBe('ada@analytical.io')
+    expect((document.getElementById('t') as HTMLTextAreaElement).value).toBe('some prose')
   })
 })

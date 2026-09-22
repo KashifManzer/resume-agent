@@ -144,7 +144,9 @@ def _llm_map(unresolved: list[FieldDescriptor]) -> dict[int, str]:
             "content": (
                 "You classify job-application form fields into a fixed vocabulary of canonical keys. "
                 "You only say what a field ASKS FOR — you never invent an answer. Use 'free_text' for "
-                "open-ended questions and 'unknown' when unsure. Use 'address' for a street / postal / "
+                "open-ended questions and 'unknown' when unsure. A field whose tag is 'select' or "
+                "'combobox' is a DROPDOWN with a fixed option list — it is never 'free_text'; use the "
+                "canonical key it asks for, or 'unknown'. Use 'address' for a street / postal / "
                 "ZIP / state / province / country address part — NOT 'location' (which is only a general "
                 "city). Reply with JSON only."
             ),
@@ -159,11 +161,22 @@ def _llm_map(unresolved: list[FieldDescriptor]) -> dict[int, str]:
     ]
     resp = llm.chat(messages, format=_LLMOut.model_json_schema())
     items = resp.get("mappings", []) if isinstance(resp, dict) else []
+    by_ref = {f.field_ref: f for f in unresolved}
     out: dict[int, str] = {}
     for m in items:
         ref, canon = m.get("field_ref"), m.get("canonical")
-        if ref is not None:
-            out[int(ref)] = canon if canon in CANONICAL else "unknown"
+        if ref is None:
+            continue
+        ref = int(ref)
+        canon = canon if canon in CANONICAL else "unknown"
+        # A dropdown has a fixed option list, so it is never free text. Left as
+        # 'free_text' it routes to the answerer, whose drafted prose then lands in
+        # the control verbatim (Greenhouse renders School/Degree as react-select
+        # comboboxes). The client guards this too; this keeps the CACHE clean.
+        f = by_ref.get(ref)
+        if canon == "free_text" and f is not None and f.tag in ("select", "combobox"):
+            canon = "unknown"
+        out[ref] = canon
     for f in unresolved:  # anything the LLM skipped is unknown, never dropped
         out.setdefault(f.field_ref, "unknown")
     return out

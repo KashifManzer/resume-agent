@@ -92,6 +92,15 @@ export function planFill(
     }
     // free-text screening question → answered by the backend answerer (T13).
     if (canonical === 'free_text') {
+      // ...but only where a drafted sentence is a legal value. A dropdown has a
+      // FIXED option list: Greenhouse renders School / Degree / Discipline as
+      // react-select `<input role=combobox>`, and the LLM mapper labels them
+      // free_text because no education canonical exists. Answering one wrote
+      // visible prose into the control and made no real selection.
+      if (d.tag === 'combobox' || d.tag === 'select') {
+        out.push({ ...base, action: 'blank', reason: 'a dropdown - pick this one yourself' })
+        continue
+      }
       out.push({ ...base, action: 'answer' })
       continue
     }

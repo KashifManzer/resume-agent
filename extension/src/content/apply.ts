@@ -1,5 +1,6 @@
 import type { PlanItem } from '../shared/types'
 import type { DetectedField } from './detector'
+import { preservingFocus, preservingPageScroll, userHasTakenOver } from './takeover'
 
 type Valued = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
 
@@ -108,6 +109,70 @@ export function isCombobox(el: Element): boolean {
   return el.matches('[role="combobox"], [aria-haspopup="listbox"]')
 }
 
+/** THIS combobox's own popup — never "whatever listbox is on the page".
+ *
+ *  Verified live on job-boards.greenhouse.io (2026-09-22): an open Greenhouse
+ *  form carries the phone widget's country listbox (`iti-0__country-listbox`,
+ *  244 options: "Afghanistan+93", "Åland Islands+358", …) in the DOM at ALL
+ *  times, and it comes FIRST in document order. So a bare
+ *  `document.querySelector('[role=listbox]')` returned the country list for every
+ *  control on the page — Degree's own popup holds 10 options
+ *  ("Bachelor's Degree", …) while the global query saw 354. Matching a value
+ *  against another control's options is how you select a phone country code
+ *  nobody asked for.
+ *
+ *  ARIA's `aria-controls`/`aria-owns` is the association, and react-select sets
+ *  `aria-controls="react-select-<id>-listbox"` when it opens. When neither is
+ *  present we look only inside the trigger's own field container — and if that
+ *  finds nothing we return null rather than fall back to the document, because a
+ *  wrong popup is worse than no fill (the caller then blanks + flags). */
+export function popupFor(trigger: Element, before: ReadonlySet<Element> = new Set()): Element | null {
+  const doc = trigger.ownerDocument
+  // 1. The ARIA association, when the widget publishes one. Authoritative.
+  const id = trigger.getAttribute('aria-controls') || trigger.getAttribute('aria-owns')
+  if (id) {
+    const owned = doc.getElementById(id)
+    if (owned) return owned.matches('[role="listbox"]') ? owned : (owned.querySelector('[role="listbox"]') ?? owned)
+  }
+  // 2. A listbox inside the trigger's own field wrapper, if it wasn't already there.
+  const scope = trigger.closest('.field, fieldset, [data-automation-id], li, [class*="select"]')
+  const scoped = scope?.querySelector('[role="listbox"]')
+  if (scoped && !before.has(scoped)) return scoped
+  // 3. A listbox that APPEARED since we opened this one. This is what separates a
+  //    real popup from an always-mounted widget like Greenhouse's phone-country
+  //    list. Ambiguity (two new popups) means we cannot tell — take neither.
+  const fresh = [...doc.querySelectorAll('[role="listbox"]')].filter((l) => !before.has(l))
+  return fresh.length === 1 ? fresh[0] : null
+}
+
+/** Listboxes already mounted before we open ours — the baseline for `popupFor`. */
+export function listboxSnapshot(doc: Document = document): ReadonlySet<Element> {
+  return new Set(doc.querySelectorAll('[role="listbox"]'))
+}
+
+/** The selectable rows of one popup. Scoped, for the same reason as `popupFor`. */
+export function optionsIn(popup: Element | null): HTMLElement[] {
+  return popup ? [...popup.querySelectorAll<HTMLElement>('[role="option"]')] : []
+}
+
+/** Re-apply a kept value to a live element after an ATS re-render. A <select>
+ *  must go through option matching: `value` is the DISPLAY text ("Canada"), and
+ *  assigning that straight to a select sets selectedIndex -1 and BLANKS it - so
+ *  the re-assert pass would destroy the very selection it is meant to protect. */
+export function reapplyValue(el: Valued, value: string): void {
+  if (el instanceof HTMLSelectElement) setSelectValue(el, value)
+  else setNativeValue(el, value)
+}
+
+/** Can this control hold an arbitrary drafted sentence? A dropdown cannot: it has
+ *  a FIXED option list, so free text either blanks it (native <select> sets
+ *  selectedIndex -1) or, on a react-select `<input role=combobox>` as Greenhouse
+ *  uses for School / Degree / Discipline, leaves visible prose with no real
+ *  selection made. Those must be left for the user, never written. */
+export function acceptsFreeText(el: Element): boolean {
+  return !isCombobox(el) && !(el instanceof HTMLSelectElement)
+}
+
 /** Poll `get` until it returns truthy or the timeout elapses — the popup listbox
  *  renders a beat after the trigger opens, and re-filters a beat after typing.
  *  Small and dependency-free. */
@@ -142,34 +207,72 @@ export async function fillCombobox(trigger: HTMLElement, value: string): Promise
     trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
   }
 
+  // The user outranks us: never open a popup over someone who is already typing.
+  if (userHasTakenOver()) return false
+
+  // Baseline BEFORE opening, so an always-mounted widget (Greenhouse's phone
+  // country listbox) can never be mistaken for this control's popup.
+  const before = listboxSnapshot(trigger.ownerDocument)
   mouse(trigger, 'mousedown', 'mouseup', 'click') // open the listbox popup
-  const listbox = await waitFor(() => document.querySelector('[role="listbox"]'))
+  const listbox = await waitFor(() => popupFor(trigger, before))
   if (!listbox) return false
 
   // Typeahead: type the value into the popup search so a virtualized list filters
-  // down until our match actually renders into the DOM.
+  // down until our match actually renders into the DOM. On react-select (Greenhouse)
+  // the trigger IS the text input, so it doubles as its own search box.
   const search = (listbox.querySelector('input') ??
-    document.querySelector('[role="listbox"] input, [role="combobox"] input')) as HTMLInputElement | null
+    listbox.parentElement?.querySelector('input') ??
+    (trigger instanceof HTMLInputElement ? trigger : null)) as HTMLInputElement | null
+  // On react-select the trigger IS the text input, so typing to filter writes into
+  // the VISIBLE field. Remember what was there: if no option matches we must put it
+  // back, or a failed drive leaves our search string sitting in the control -
+  // which is the "prose left in the School box" bug wearing a different hat.
+  const searchWas = search ? search.value : ''
+  const restoreSearch = (): void => {
+    if (search && search.value !== searchWas) setNativeValue(search, searchWas)
+  }
   if (search) {
-    search.focus()
-    setNativeValue(search, value)
-    search.dispatchEvent(new KeyboardEvent('keyup', { key: value.slice(-1) || 'a', bubbles: true }))
+    // Restore the caret afterwards — focusing the popup's search box mid-sentence
+    // is exactly how the fill used to steal typing out from under the user.
+    preservingFocus(() => {
+      search.focus()
+      setNativeValue(search, value)
+      search.dispatchEvent(new KeyboardEvent('keyup', { key: value.slice(-1) || 'a', bubbles: true }))
+    })
   }
 
   // Wait for the exact/unique MATCH to be present (post-filter) — not just any option.
   const match = await waitFor(() => {
-    const opts = [...document.querySelectorAll<HTMLElement>('[role="option"]')].filter(
+    if (userHasTakenOver()) return null // stand down mid-drive
+    const opts = optionsIn(popupFor(trigger, before) ?? listbox).filter(
       (o) => (o.textContent ?? '').trim() && norm(o.textContent ?? '') !== 'select one',
     )
     return opts.length ? pickOption(opts, value, (o) => o.textContent ?? '') : null
   })
   if (!match) {
+    restoreSearch() // undo our typeahead text before backing out
     close() // no confident match → leave the field untouched, never a wrong/first-row pick
     return false
   }
 
-  match.scrollIntoView?.({ block: 'nearest' }) // a virtualized row must be in view to receive events
+  // A virtualized row must be in view to receive events, but scrollIntoView moves
+  // every scrollable ancestor INCLUDING the document. Put the page back.
+  preservingPageScroll(() => match.scrollIntoView?.({ block: 'nearest' }))
   mouse(match, 'mousedown', 'mouseup', 'click') // select on the full pointer sequence, not click alone
+
+  // Confirm it COMMITTED instead of reporting an optimistic success. Measured
+  // live on react-select: a committed pick closes the popup (aria-expanded goes
+  // "true" -> "false") and the search input returns to EMPTY, with the chosen
+  // label rendered as separate text - so the input's own value is not the
+  // signal, and a click that quietly did nothing would otherwise be reported as
+  // filled while our typeahead text sat in the control. Widgets that publish no
+  // aria-expanded (Workday's button comboboxes) are trusted exactly as before.
+  const committed = await waitFor(() => (trigger.getAttribute('aria-expanded') !== 'true' ? true : null), 1000)
+  if (!committed) {
+    restoreSearch()
+    close()
+    return false
+  }
   return true
 }
 
@@ -207,6 +310,16 @@ export async function fillComboboxes(fields: DetectedField[], plan: PlanItem[]):
     if (item.action !== 'fill' || item.value == null) continue
     const el = byRef.get(item.field_ref)
     if (!el || !isCombobox(el)) continue
+    // Once the user is working the form, stop driving the rest. Each remaining
+    // combobox would open a popup, focus its search box and scroll a row into
+    // view - on a 16-combobox Greenhouse form that is up to a minute of the page
+    // moving under someone who is already correcting our earlier fills.
+    if (userHasTakenOver()) {
+      item.action = 'blank'
+      item.value = undefined
+      item.reason = 'left for you - you were editing'
+      continue
+    }
     if (!(await fillCombobox(el as HTMLElement, item.value))) {
       item.action = 'blank'
       item.value = undefined
