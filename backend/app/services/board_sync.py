@@ -31,10 +31,10 @@ BOARD_MAX_BYTES = 32 * 1024 * 1024   # largest real board is Ashby/openai at ~13
 # not an SSRF vector, but a traversal-shaped slug has no business being fetched.
 _SLUG_OK = re.compile(r"^[A-Za-z0-9_.-]+$")
 
-HARVEST_INTERVAL = timedelta(hours=2)
+HARVEST_INTERVAL = timedelta(hours=1)
 SCOUT_INTERVAL = timedelta(hours=24)
 RETENTION_INTERVAL = 15 * 60    # independent of the potentially long harvest cycle
-JITTER = (2.0, 10.0)             # polite gap between vendor requests
+JITTER = (1.0, 3.0)             # polite gap between vendor requests
 MAX_BACKOFF = 300.0              # cap on an honoured Retry-After
 
 SEED_COMPANIES = {
