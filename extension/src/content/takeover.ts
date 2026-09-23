@@ -51,10 +51,29 @@ export function userTouched(el: Element | null | undefined): boolean {
 export function noteUserActivity(target?: EventTarget | null): void {
   takenOver = true
   if (target instanceof Element) {
-    touched.add(target)
-    const k = keyOf(target)
+    const el = controlOf(target)
+    touched.add(el)
+    const k = keyOf(el)
     if (k) touchedKeys.add(k)
   }
+}
+
+// A hidden input (react-select renders one per `name`) is never something the user works.
+const CONTROL = 'input:not([type="hidden"]), select, textarea, [role="combobox"], button[aria-haspopup="listbox"]'
+
+/** The form control an event belongs to. A mouse-only dropdown pick never lands
+ *  on the control: measured live on Greenhouse react-select, its two pointerdowns
+ *  hit the arrow's <svg path> and the option <div>. So walk up to the nearest
+ *  block holding exactly one control; a block holding several credits none. */
+function controlOf(target: Element): Element {
+  const own = target.closest(CONTROL)
+  if (own) return own
+  for (let n = target.parentElement; n && n !== target.ownerDocument.body; n = n.parentElement) {
+    const found = n.querySelectorAll(CONTROL)
+    if (found.length === 1) return found[0]
+    if (found.length > 1) break
+  }
+  return target
 }
 
 /** Start watching. Idempotent; call at the top of each fill. */
@@ -63,7 +82,9 @@ export function watchTakeover(): void {
   takenOver = false
   const on = (e: Event): void => {
     if (!e.isTrusted) return // our own dispatched events - never a takeover
-    noteUserActivity(e.target)
+    // Scrolling past a field is not working it: claiming it would stop
+    // reassertFills restoring a value an ATS re-render blanked under the wheel.
+    noteUserActivity(e.type === 'wheel' ? null : e.target)
   }
   // pointerdown/keydown/touchstart = the user is working the form.
   // wheel = the user is scrolling; moving the viewport under them is the bug.

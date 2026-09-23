@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { detectFields, pageSig } from '../src/content/detector'
+import { detectFields, fieldKeys } from '../src/content/detector'
 import { loadFixture } from './util'
 
 describe('detectFields', () => {
@@ -112,16 +112,16 @@ describe('detectFields', () => {
     expect(combo.descriptor.aria_label).toBe('') // never the value-bearing aria-label
   })
 
-  test('pageSig (T19 multi-step): stable within a step, changes across steps', () => {
+  test('fieldKeys (T19 multi-step): stable within a step, new keys on a new step', () => {
     document.body.innerHTML = '<input name="a" /><input name="b" />'
-    const sig1 = pageSig(detectFields(document))
-    expect(pageSig(detectFields(document))).toBe(sig1) // same page re-detected → same sig
-    // filling a value must NOT change the sig (it keys off structure, not values)
+    const keys1 = fieldKeys(detectFields(document))
+    expect(fieldKeys(detectFields(document))).toEqual(keys1) // same page re-detected → same keys
+    // filling a value must NOT change them (they key off structure, not values)
     ;(document.querySelector('[name=a]') as HTMLInputElement).value = 'typed'
-    expect(pageSig(detectFields(document))).toBe(sig1)
-    // a different step (different fields) → different sig
+    expect(fieldKeys(detectFields(document))).toEqual(keys1)
+    // a different step (different fields) → keys never seen before
     document.body.innerHTML = '<input name="c" /><textarea name="d"></textarea>'
-    expect(pageSig(detectFields(document))).not.toBe(sig1)
+    expect(fieldKeys(detectFields(document)).some((k) => keys1.includes(k))).toBe(false)
   })
 
   test('context (T19): empty when the field has no heading/legend around it', () => {

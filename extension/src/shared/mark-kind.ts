@@ -4,6 +4,10 @@
 // the flag sub-types come off the answerer's reason string (its only tell).
 import type { PlanItem } from './types'
 
+/** The reason on a field the user already answered themselves. No mark on the
+ *  page, and never counted as a field we "couldn't map" in the popup. */
+export const YOURS = 'you already answered this'
+
 export type MarkKind = 'draft' | 'choice' | 'ok' | 'blank' | 'sensitive' | 'query' | 'flag'
 
 export function markKind(item: PlanItem): MarkKind {

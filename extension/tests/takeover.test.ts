@@ -90,6 +90,49 @@ describe('takeover: the user outranks the autofill', () => {
     expect(userTouched(document.querySelectorAll('input')[2])).toBe(false)
   })
 
+  test('a mouse-only dropdown pick is credited to the dropdown, not the <svg>/<div> it lands on', () => {
+    // Measured live on Greenhouse react-select: the two pointerdowns of a pick hit
+    // the arrow's <svg path> and the option <div>, never the <input>.
+    document.body.innerHTML = `
+      <div class="field"><label for="h">Hispanic/Latino?</label>
+        <div class="select__control"><input id="h" role="combobox" /><svg><path id="arrow"/></svg></div>
+        <input type="hidden" name="h" value="" />
+        <div role="listbox"><div role="option" id="opt">Decline</div></div>
+      </div>
+      <div class="field"><input id="other" /></div>`
+    watchTakeover()
+    userActs(document.getElementById('opt')!) // the option alone (the menu sits beside the hidden input)
+    expect(userTouched(document.getElementById('h'))).toBe(true)
+    resetTakeoverForTest()
+    watchTakeover()
+    userActs(document.getElementById('arrow')!)
+    expect(userTouched(document.getElementById('h'))).toBe(true)
+    expect(userTouched(document.getElementById('other'))).toBe(false)
+  })
+
+  test('a click in a block holding several fields credits none of them', () => {
+    document.body.innerHTML = '<form><p id="p">Personal info</p><input id="a" /><input id="b" /></form>'
+    watchTakeover()
+    userActs(document.getElementById('p')!)
+    expect(userTouched(document.getElementById('a'))).toBe(false)
+    expect(userTouched(document.getElementById('b'))).toBe(false)
+    expect(userHasTakenOver()).toBe(true) // still stands the fill down
+  })
+
+  test('scrolling over a field stands the fill down but does not claim the field', () => {
+    // Claiming it would stop reassertFills restoring a value an ATS re-render blanked.
+    document.body.innerHTML = '<div class="field"><label id="l" for="a">Email</label><input id="a" /></div>'
+    const spy = vi.spyOn(document, 'addEventListener')
+    watchTakeover()
+    const listener = spy.mock.calls.find((c) => c[0] === 'wheel')![1] as (e: unknown) => void
+    spy.mockRestore()
+    listener({ isTrusted: true, type: 'wheel', target: document.getElementById('a') })
+    expect(userHasTakenOver()).toBe(true)
+    expect(userTouched(document.getElementById('a'))).toBe(false)
+    listener({ isTrusted: true, type: 'pointerdown', target: document.getElementById('l') })
+    expect(userTouched(document.getElementById('a'))).toBe(true) // a click on its label does
+  })
+
   test('watchTakeover is idempotent and resets the flag for a new fill', () => {
     document.body.innerHTML = '<input id="a" />'
     watchTakeover()

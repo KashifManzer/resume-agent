@@ -1,6 +1,7 @@
+import { YOURS } from '../shared/mark-kind'
 import type { PlanItem } from '../shared/types'
 import type { DetectedField } from './detector'
-import { preservingFocus, preservingPageScroll, userHasTakenOver } from './takeover'
+import { preservingFocus, preservingPageScroll, userHasTakenOver, userTouched } from './takeover'
 
 type Valued = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
 
@@ -284,6 +285,16 @@ export function applyPlan(fields: DetectedField[], plan: PlanItem[], resume: Fil
   for (const item of plan) {
     const el = byRef.get(item.field_ref)
     if (!el) continue
+    // A field the user worked is theirs, on every pass. A re-fill used to write
+    // our value straight back over their edit (live Greenhouse: "NA" -> "F1").
+    // Flagged, not blanked, so no "needs you" mark lands on their answer. Runs
+    // before the combobox skip, so the async pass never opens theirs either.
+    if ((item.action === 'fill' || item.action === 'attach') && userTouched(el)) {
+      item.action = 'flag'
+      item.value = undefined
+      item.reason = YOURS
+      continue
+    }
     if (item.action === 'fill' && item.value != null) {
       if (isCombobox(el)) continue // async combobox pass owns these
       if (el instanceof HTMLSelectElement) {

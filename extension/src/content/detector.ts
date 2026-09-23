@@ -73,15 +73,11 @@ export function detectFields(root: Document | Element = document): DetectedField
   return out
 }
 
-/** A structural signature of the detected field set (T19 multi-step). Changes
- *  when the page becomes a different form/step, but is stable across value fills
- *  and proof-mark overlays (it keys off structure, not values) — so a wizard's
- *  new step is detected without re-filling the same page. Order-independent. */
-export function pageSig(fields: DetectedField[]): string {
-  return fields
-    .map((f) => `${f.descriptor.tag}:${f.descriptor.type}:${f.descriptor.name}:${f.descriptor.label}`)
-    .sort()
-    .join('|')
+/** The structural key of each detected field (T19 multi-step). Stable across
+ *  value fills and proof-mark overlays (structure, never values), so a wizard's
+ *  new step shows up as keys never seen before. */
+export function fieldKeys(fields: DetectedField[]): string[] {
+  return fields.map((f) => `${f.descriptor.tag}:${f.descriptor.type}:${f.descriptor.name}:${f.descriptor.label}`)
 }
 
 /** A combobox that belongs to the application form — not a nav/utility menu

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { flagKind, type MarkKind } from '../shared/mark-kind'
+import { flagKind, type MarkKind, YOURS } from '../shared/mark-kind'
 import { sendToBackground } from '../shared/messaging'
 import type { FillResult, JobSummary, PlanItem } from '../shared/types'
 
@@ -187,7 +187,7 @@ function Review({ result, onRefill, busy }: { result: FillResult; onRefill: () =
   // and the plain "we couldn't map this" bunch — the latter is just a count, not
   // a per-field mark, so the review list (and the page) stay readable.
   const meaningfulFlags = result.flagged.filter((it) => flagKind(it) !== 'flag')
-  const genericFlags = result.flagged.filter((it) => flagKind(it) === 'flag')
+  const genericFlags = result.flagged.filter((it) => flagKind(it) === 'flag' && it.reason !== YOURS)
   const rows = [
     ...textDrafts.map((it) => ({ it, kind: 'draft' as MarkKind })),
     ...choiceReviews.map((it) => ({ it, kind: 'choice' as MarkKind })),

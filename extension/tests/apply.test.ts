@@ -1,7 +1,8 @@
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 
-import { acceptsFreeText, alreadyFilled, applyPlan, fillCombobox, fitMaxLength, pickOption, reapplyValue, setNativeValue, setSelectValue } from '../src/content/apply'
+import { acceptsFreeText, alreadyFilled, applyPlan, fillCombobox, fillComboboxes, fitMaxLength, pickOption, reapplyValue, setNativeValue, setSelectValue } from '../src/content/apply'
 import type { DetectedField } from '../src/content/detector'
+import { noteUserActivity, resetTakeoverForTest, watchTakeover } from '../src/content/takeover'
 import type { PlanItem } from '../src/shared/types'
 import { bare } from './util'
 
@@ -105,6 +106,71 @@ describe('applyPlan across widgets (P2)', () => {
     expect(s1.value).toBe('ca') // matched
     expect(plan[1].action).toBe('blank') // unmatched → downgraded
     expect(s2.value).toBe('') // untouched, no wrong selection
+  })
+})
+
+describe('the user outranks every write path (re-fill after the user edited)', () => {
+  afterEach(() => resetTakeoverForTest())
+
+  test('applyPlan keeps what the user put in a text field or dropdown, and still fills the rest', () => {
+    // Live Greenhouse (Telnyx): the user changed our "F1" to "NA"; a re-fill wrote "F1" straight back.
+    document.body.innerHTML =
+      '<textarea id="t">NA</textarea>' +
+      '<select id="s"><option value="">-</option><option value="ca">Canada</option><option value="fr">France</option></select>' +
+      '<input id="e" />'
+    const t = document.getElementById('t') as HTMLTextAreaElement
+    const s = document.getElementById('s') as HTMLSelectElement
+    const e = document.getElementById('e') as HTMLInputElement
+    s.value = 'fr'
+    noteUserActivity(t)
+    noteUserActivity(s)
+    const fields: DetectedField[] = [
+      { el: t, descriptor: bare({ field_ref: 0, tag: 'textarea' }) },
+      { el: s, descriptor: bare({ field_ref: 1, tag: 'select' }) },
+      { el: e, descriptor: bare({ field_ref: 2 }) },
+    ]
+    const plan: PlanItem[] = [
+      { field_ref: 0, label: 'Work authorization', canonical: 'work_authorization', action: 'fill', value: 'F1' },
+      { field_ref: 1, label: 'Country', canonical: 'location', action: 'fill', value: 'Canada' },
+      { field_ref: 2, label: 'Email', canonical: 'email', action: 'fill', value: 'ada@analytical.io' },
+    ]
+    applyPlan(fields, plan, null)
+    expect(t.value).toBe('NA')
+    expect(s.value).toBe('fr')
+    expect(e.value).toBe('ada@analytical.io') // an untouched field is still filled
+    expect(plan.map((p) => p.action)).toEqual(['flag', 'flag', 'fill'])
+    expect(plan[0].value).toBeUndefined() // the popup must not report "F1" as filled
+  })
+
+  test('a dropdown the user already worked is never opened by the async pass', async () => {
+    document.body.innerHTML = '<input id="c" role="combobox" />'
+    const c = document.getElementById('c') as HTMLInputElement
+    let opened = false
+    c.addEventListener('mousedown', () => (opened = true))
+    noteUserActivity(c)
+    watchTakeover() // a re-fill resets the page-wide takeover flag; the per-field memory must survive it
+    const fields: DetectedField[] = [{ el: c, descriptor: bare({ field_ref: 0, tag: 'combobox' }) }]
+    const plan: PlanItem[] = [{ field_ref: 0, label: 'Sponsorship', canonical: 'free_text', action: 'fill', value: 'no', control: 'choice' }]
+    applyPlan(fields, plan, null) // the real order (index.ts): sync pass, then the async combobox pass
+    await fillComboboxes(fields, plan)
+    expect(opened).toBe(false)
+    expect(plan[0].action).toBe('flag')
+  })
+
+  test('a file input the user picked their own file into is not re-attached', () => {
+    // jsdom has no DataTransfer, so stand one in and watch the `files` write itself -
+    // the test must fail on its assertion, not on a missing global.
+    vi.stubGlobal('DataTransfer', class { items = { add() {} }; files = [] })
+    document.body.innerHTML = '<input id="f" type="file" />'
+    const f = document.getElementById('f') as HTMLInputElement
+    const attached = vi.fn()
+    Object.defineProperty(f, 'files', { set: attached })
+    noteUserActivity(f)
+    const plan: PlanItem[] = [{ field_ref: 0, label: 'Resume', canonical: 'resume_upload', action: 'attach' }]
+    applyPlan([{ el: f, descriptor: bare({ field_ref: 0, type: 'file' }) }], plan, new File(['x'], 'resume.pdf'))
+    expect(attached).not.toHaveBeenCalled()
+    expect(plan[0].action).toBe('flag')
+    vi.unstubAllGlobals()
   })
 })
 

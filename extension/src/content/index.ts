@@ -2,13 +2,14 @@
 // detects the form, fills factual fields, and attaches the tailored résumé —
 // then stops. There is NO code path here that clicks a submit control.
 import { FILL_THRESHOLD } from '../shared/config'
+import { YOURS } from '../shared/mark-kind'
 import { sendToBackground } from '../shared/messaging'
 import type { AnswerResult, FillResult, Mapping, PdfPayload, PlanItem, Profile } from '../shared/types'
 import { acceptsFreeText, alreadyFilled, anyChecked, applyPlan, fillComboboxes, fitMaxLength, isCombobox, selectRadio, reapplyValue, setNativeValue } from './apply'
 import { decideChoice } from './choice-answer'
 import { detectRadioGroups } from './choices'
 import type { DetectedField } from './detector'
-import { detectFields, pageSig } from './detector'
+import { detectFields, fieldKeys } from './detector'
 import { mapAll } from './mapper'
 import { planFill, reverseCanonical } from './plan'
 import { userTouched, watchTakeover } from './takeover'
@@ -52,6 +53,9 @@ async function fill(jobId: string | null): Promise<FillResult> {
   watchTakeover()
   const fields = detectFields(document)
   if (fields.length === 0) return empty('No application form detected on this page.')
+  // Before any dropdown pick hides its input, so a pick the user later clears
+  // doesn't come back looking like a new step.
+  for (const k of fieldKeys(fields)) seenFields.add(k)
 
   const descriptors = fields.map((f) => f.descriptor)
   const profile = await sendToBackground<Profile>({ type: 'GET_PROFILE' })
@@ -169,25 +173,26 @@ function captureMappingCorrections(fields: DetectedField[], mappings: Map<number
 }
 
 let stepWatcher: MutationObserver | null = null
+// Every field any fill has detected on this page, by structural key.
+const seenFields = new Set<string>()
 
 /** After the first Fill, re-run detect→map→fill each time a Workday-style
- *  multi-step wizard advances to a NEW step (a different field set renders). The
- *  user drives navigation (Save & Continue) — we NEVER advance or submit, we just
- *  re-fill the page they land on. Keyed on the structural page signature and
- *  debounced, so it never loops on fill()'s own DOM writes; idempotent, so a
- *  spurious fire is harmless. ponytail: one observer for the page session. */
+ *  multi-step wizard advances to a NEW step. The user drives navigation (Save &
+ *  Continue) — we NEVER advance or submit, we just re-fill the page they land on.
+ *  A new step is a field we have NEVER seen. A field merely hiding or coming back
+ *  is not one: Greenhouse's react-select sets its input to opacity 0 once
+ *  answered, and treating that as a new step re-ran the fill over the user's
+ *  edits. Debounced, so it never loops on fill()'s own DOM writes.
+ *  ponytail: one observer for the page session. */
 function watchSteps(jobId: string | null): void {
   if (stepWatcher) return // install once
-  let lastSig = pageSig(detectFields(document))
   let busy = false
   let timer = 0
   stepWatcher = new MutationObserver(() => {
     clearTimeout(timer)
     timer = window.setTimeout(async () => {
       if (busy) return
-      const sig = pageSig(detectFields(document))
-      if (sig === lastSig) return // still the same step
-      lastSig = sig
+      if (fieldKeys(detectFields(document)).every((k) => seenFields.has(k))) return // still the same step
       busy = true
       try {
         await fill(jobId)
@@ -209,7 +214,7 @@ function fillChoices(startRef: number, profile: Profile): { fields: DetectedFiel
     const base = { field_ref: g.field_ref, label: g.question || g.name, canonical: 'free_text' as const }
     let item: PlanItem | null = null
     if (anyChecked(g.options.map((o) => o.el))) {
-      item = { ...base, action: 'flag', reason: 'you already answered this' }
+      item = { ...base, action: 'flag', reason: YOURS }
     } else {
       const d = decideChoice(g, profile)
       if (d.option) {
@@ -265,7 +270,7 @@ async function answerFreeText(fields: DetectedField[], plan: PlanItem[], jobId: 
     }
     if (alreadyFilled(el)) {
       item.action = 'flag'
-      item.reason = 'you already answered this'
+      item.reason = YOURS
       continue
     }
     let res: AnswerResult
@@ -289,6 +294,12 @@ async function answerFreeText(fields: DetectedField[], plan: PlanItem[], jobId: 
       const sensitive = /high-stakes|leave this to yourself|sensitive/i.test(item.reason ?? res.reason ?? '')
       item.action = sensitive ? 'flag' : 'blank'
       item.reason = res.reason ?? 'answer this yourself'
+      continue
+    }
+    // The answer took a backend round-trip; the user may have typed here meanwhile.
+    if (el === document.activeElement || userTouched(el) || alreadyFilled(el)) {
+      item.action = 'flag'
+      item.reason = YOURS
       continue
     }
     const value = fitMaxLength(el, res.answer)
