@@ -637,6 +637,24 @@ async def harvester_loop():
         await asyncio.sleep(HARVEST_POLL)
 
 
+def claim_background_lock():
+    """Only one process may run the harvester/scout/retention loops on a DB.
+    T29 found a second server on the same app.db running a stale harvester that
+    undid provider moves and re-polled parked boards. An OS lock, not a row: the
+    kernel drops it when its holder exits or crashes, so it never goes stale.
+    Returns the open lock file (keep it open while the loops run) or None.
+    ponytail: fcntl is POSIX-only (macOS/Linux, the dev and Docker targets)."""
+    import fcntl
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+    handle = open(config.DATA_DIR / "background.lock", "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
+
+
 def cleanup_postings() -> int:
     with _db.SessionLocal() as db:
         removed = board_policy.prune_postings(db)

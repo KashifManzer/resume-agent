@@ -6,20 +6,27 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import init_db
 from app.routers import answers, autofill, board, jd, jobs, profile
-from app.services.board_sync import cleanup_postings, harvester_loop, retention_loop, scout_loop
+from app.services.board_sync import (
+    claim_background_lock, cleanup_postings, harvester_loop, retention_loop, scout_loop)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()  # create tables + seed the "default" profile on startup (T11)
     cleanup_postings()
-    tasks = [asyncio.create_task(loop()) for loop in (harvester_loop, scout_loop, retention_loop)]
+    lock = claim_background_lock()  # T29: one harvester per DB, however many servers
+    if lock is None:
+        print("[board] another process runs the harvester for this DB; serving the API only")
+    loops = (harvester_loop, scout_loop, retention_loop) if lock else ()
+    tasks = [asyncio.create_task(loop()) for loop in loops]
     try:
         yield
     finally:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if lock:
+            lock.close()
 
 
 app = FastAPI(title="Resume Agent", lifespan=lifespan)

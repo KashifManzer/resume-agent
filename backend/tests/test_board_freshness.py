@@ -413,3 +413,67 @@ def test_periodic_cleanup_runs_independently_and_recovers_after_error(monkeypatc
         asyncio.run(board_sync.retention_loop())
     assert intervals == [900, 900, 900]
     assert len(sweeps) == 2
+
+
+# --- T29: one harvester per DB ------------------------------------------------
+# A second server on the same app.db ran a stale harvester that undid provider
+# moves. Only the lock holder runs the loops; every process still serves the API.
+
+def _started_loops(monkeypatch):
+    import app.main as main
+    started = []
+    def worker(name):
+        async def loop():
+            started.append(name)
+            await asyncio.Event().wait()
+        return loop
+    for name in ("harvester_loop", "scout_loop", "retention_loop"):
+        monkeypatch.setattr(main, name, worker(name))
+    return started
+
+
+def test_a_second_server_on_the_same_db_runs_no_background_loops(monkeypatch, capsys):
+    import app.main as main
+    started = _started_loops(monkeypatch)
+    held = board_sync.claim_background_lock()
+    try:
+        async def scenario():
+            async with main.lifespan(app):
+                await asyncio.sleep(0)
+        asyncio.run(scenario())
+        assert started == []
+        assert "serving the API only" in capsys.readouterr().out
+    finally:
+        held.close()
+
+
+def test_the_lock_is_released_on_shutdown_so_a_restart_takes_over(monkeypatch):
+    import app.main as main
+    started = _started_loops(monkeypatch)
+    async def scenario():
+        async with main.lifespan(app):
+            await asyncio.sleep(0)
+    asyncio.run(scenario())
+    assert sorted(started) == ["harvester_loop", "retention_loop", "scout_loop"]
+    again = board_sync.claim_background_lock()
+    assert again is not None
+    again.close()
+
+
+def test_a_lock_held_by_another_os_process_is_respected(tmp_path, monkeypatch):
+    """The real failure: two uvicorn processes, not two lifespans in one."""
+    import subprocess, sys
+    monkeypatch.setattr(board_sync.config, "DATA_DIR", tmp_path)
+    holder = subprocess.Popen(
+        [sys.executable, "-c",
+         "import fcntl, sys, time; f = open(sys.argv[1], 'w'); "
+         "fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB); print('held', flush=True); time.sleep(30)",
+         str(tmp_path / "background.lock")], stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        assert board_sync.claim_background_lock() is None
+    finally:
+        holder.kill(); holder.wait()
+    mine = board_sync.claim_background_lock()   # the kernel released the dead holder's lock
+    assert mine is not None
+    mine.close()
