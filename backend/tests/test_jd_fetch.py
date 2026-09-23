@@ -390,6 +390,20 @@ def test_existing_company_is_left_untouched(monkeypatch):
     assert _companies() == {"acme": ("lever", "github")}  # provider not flipped (the T26 scout rule)
 
 
+def test_pasting_a_parked_company_queues_it_for_the_next_harvest(monkeypatch):
+    """T29: the ATS just answered, so a board exists. If the recorded board is the
+    dead one, the harvester's re-resolve moves it; the paste only un-parks it."""
+    with _db.SessionLocal() as db:
+        db.add(TrackedCompany(slug="notion", provider="greenhouse", discovery_source="github",
+                              gone_at=datetime(2026, 9, 22), last_synced_at=datetime(2026, 9, 22)))
+        db.commit()
+    r = _paste(monkeypatch, JdSource(text="x", source_url="https://jobs.ashbyhq.com/notion/1", adapter="ashby"))
+    assert r.json()["board"] == "tracked"
+    with _db.SessionLocal() as db:
+        c = db.get(TrackedCompany, "notion")
+        assert (c.provider, c.gone_at, c.last_synced_at) == ("greenhouse", None, None)
+
+
 @pytest.mark.parametrize("adapter, url", [
     ("generic", "https://careers.example.com/jobs/1"),      # includes an ATS whose API failed over to generic
     ("workday", "https://nvidia.wd5.myworkdayjobs.com/x/job/y"),

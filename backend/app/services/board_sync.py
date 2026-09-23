@@ -31,7 +31,9 @@ BOARD_MAX_BYTES = 64 * 1024 * 1024   # largest real board is Ashby/bjakcareer at
 # not an SSRF vector, but a traversal-shaped slug has no business being fetched.
 _SLUG_OK = re.compile(r"(?!.*\.\.)[A-Za-z0-9_.-]+")  # fullmatch; no ".." anywhere
 
-HARVEST_INTERVAL = timedelta(hours=1)
+HARVEST_INTERVAL = timedelta(hours=1)   # per company: how stale a board may get
+HARVEST_POLL = 60               # seconds between passes; each pass takes only stale boards
+PARK_FOR = timedelta(days=7)    # a board on no ATS we list is rechecked weekly
 SCOUT_INTERVAL = timedelta(hours=24)
 RETENTION_INTERVAL = 15 * 60    # independent of the potentially long harvest cycle
 JITTER = (1.0, 3.0)             # polite gap between vendor requests
@@ -335,11 +337,31 @@ def _retry_after_seconds(resp: httpx.Response, default: float = 300.0) -> float:
         return default
 
 
-async def _get_board(provider: str, slug: str) -> list | dict | None:
-    """The single network path for every board. Returns parsed JSON, or None when
-    the board is gone (404). Raises RateLimited on 429/403 and HTTPStatusError on
-    anything else, so the caller can tell "this vendor is unhappy" from "our code
-    is broken". Endpoint URLs come from jd_adapters so they live in one module.
+# Conditional GET (T29). Measured 2026-09-23: after an hour, 643 of 668 live
+# boards answered 304, so most passes download almost nothing. In memory on
+# purpose: a restart (every code change under --reload) refetches every board
+# once, so a filter change always re-applies to all of them. An ETag is only
+# trusted once its board's rows are committed (_commit_etag); until then it
+# waits in _UNCOMMITTED_ETAGS, so a crash mid-sync can never pin stale rows.
+NOT_MODIFIED = object()
+_ETAGS: dict[tuple[str, str], str] = {}
+_UNCOMMITTED_ETAGS: dict[tuple[str, str], str | None] = {}
+
+
+def _commit_etag(provider: str, slug: str) -> None:
+    etag = _UNCOMMITTED_ETAGS.pop((provider, slug), None)
+    if etag:
+        _ETAGS[(provider, slug)] = etag
+    else:
+        _ETAGS.pop((provider, slug), None)
+
+
+async def _get_board(provider: str, slug: str) -> list | dict | object | None:
+    """The single network path for every board. Returns parsed JSON, None when
+    the board is gone (404), or NOT_MODIFIED (304). Raises RateLimited on 429/403
+    and HTTPStatusError on anything else, so the caller can tell "this vendor is
+    unhappy" from "our code is broken". Endpoint URLs come from jd_adapters so
+    they live in one module.
     """
     if not _SLUG_OK.fullmatch(slug):
         raise ValueError(f"refusing suspicious board slug: {slug!r}")
@@ -348,10 +370,15 @@ async def _get_board(provider: str, slug: str) -> list | dict | None:
         url = adapter.list_url(slug)
     except (LookupError, AttributeError) as e:  # unknown ATS, or one with no board endpoint
         raise ValueError(f"cannot list a board for provider {provider!r}") from e
+    headers = {"User-Agent": USER_AGENT}
+    if (provider, slug) in _ETAGS:
+        headers["If-None-Match"] = _ETAGS[(provider, slug)]
     async with httpx.AsyncClient(timeout=BOARD_TIMEOUT) as client:
-        async with client.stream("GET", url, headers={"User-Agent": USER_AGENT}) as resp:
+        async with client.stream("GET", url, headers=headers) as resp:
             if resp.status_code == 404:
                 return None
+            if resp.status_code == 304:  # before raise_for_status: httpx raises on 3xx
+                return NOT_MODIFIED
             if resp.status_code in (403, 429):
                 raise RateLimited(_retry_after_seconds(resp))
             resp.raise_for_status()
@@ -361,14 +388,16 @@ async def _get_board(provider: str, slug: str) -> list | dict | None:
                 if total > BOARD_MAX_BYTES:
                     raise ValueError(f"{provider}/{slug}: board exceeds {BOARD_MAX_BYTES} bytes")
                 chunks.append(chunk)
+            _UNCOMMITTED_ETAGS[(provider, slug)] = resp.headers.get("etag")
     return json.loads(b"".join(chunks))
 
 
-async def fetch_ashby(slug: str) -> list[dict] | None:
-    """None means the board could not be observed (404); [] means it is empty."""
+async def fetch_ashby(slug: str) -> list[dict] | object | None:
+    """None means the board could not be observed (404); [] means it is empty;
+    NOT_MODIFIED means it is unchanged since the last committed sync."""
     data = await _get_board("ashby", slug)
-    if data is None:
-        return None
+    if data is None or data is NOT_MODIFIED:
+        return data
     return [
         {
             "title": job.get("title"),
@@ -390,10 +419,10 @@ def greenhouse_url(slug: str, job: dict) -> str | None:
     return f"https://job-boards.greenhouse.io/{slug}/jobs/{jid}"
 
 
-async def fetch_greenhouse(slug: str) -> list[dict] | None:
+async def fetch_greenhouse(slug: str) -> list[dict] | object | None:
     data = await _get_board("greenhouse", slug)
-    if data is None:
-        return None
+    if data is None or data is NOT_MODIFIED:
+        return data
     return [
         {
             "title": job.get("title"),
@@ -407,10 +436,10 @@ async def fetch_greenhouse(slug: str) -> list[dict] | None:
     ]
 
 
-async def fetch_lever(slug: str) -> list[dict] | None:
+async def fetch_lever(slug: str) -> list[dict] | object | None:
     data = await _get_board("lever", slug)
-    if data is None:
-        return None
+    if data is None or data is NOT_MODIFIED:
+        return data
     return [
         {
             "title": job.get("text"),
@@ -427,30 +456,63 @@ class BoardVendorError(Exception):
     bug in our code - the distinction is the whole point of this exception."""
 
 
-async def sync_company_jobs(db, company: TrackedCompany) -> int:
-    """Refresh one company's postings and return how many were kept.
+FETCHERS = {"ashby": fetch_ashby, "greenhouse": fetch_greenhouse, "lever": fetch_lever}
+
+
+async def _fetch(provider: str, slug: str):
+    fetch = FETCHERS.get(provider)
+    if fetch is None:
+        raise BoardVendorError(f"unknown provider {provider!r}")
+    try:
+        return await fetch(slug)
+    except (httpx.HTTPError, ValueError) as e:
+        raise BoardVendorError(f"{provider}/{slug}: {e}") from e
+
+
+async def _find_moved_board(company: TrackedCompany) -> list[dict] | None:
+    """Companies change ATS. T29 audit: 103 of 348 boards that 404'd were live on
+    another vendor under the same slug (Notion, Sentry, Zapier...), and none on
+    two. All three vendors 404 a slug they do not host, so a 200 is evidence.
+    ponytail: same slug is taken as same company; the vendors expose no stronger
+    identity. Worst case is a real board of a same-named company."""
+    for provider in FETCHERS:
+        if provider == company.provider:
+            continue
+        _ETAGS.pop((provider, company.slug), None)  # a 304 here would carry no jobs
+        try:
+            jobs = await _fetch(provider, company.slug)
+        except BoardVendorError:
+            continue
+        if jobs is not None:
+            print(f"[board] {company.slug} moved {company.provider} -> {provider}")
+            company.provider = provider
+            return jobs
+    return None
+
+
+async def sync_company_jobs(db, company: TrackedCompany) -> int | None:
+    """Refresh one company's postings and return how many were kept, or None
+    when the board is unchanged since its last committed sync (304).
     Raise BoardVendorError/RateLimited for vendor failures; let code bugs propagate.
     """
-    try:
-        if company.provider == "ashby":
-            raw_jobs = await fetch_ashby(company.slug)
-        elif company.provider == "greenhouse":
-            raw_jobs = await fetch_greenhouse(company.slug)
-        elif company.provider == "lever":
-            raw_jobs = await fetch_lever(company.slug)
-        else:
-            raise BoardVendorError(f"unknown provider {company.provider!r}")
-    except (httpx.HTTPError, ValueError) as e:
-        raise BoardVendorError(f"{company.provider}/{company.slug}: {e}") from e
+    raw_jobs = await _fetch(company.provider, company.slug)
+    if raw_jobs is None:
+        raw_jobs = await _find_moved_board(company)
 
     now = board_policy.utcnow()
+    company.last_synced_at = now
     if raw_jobs is None:
-        # 404: we did not observe this board, so we cannot conclude its postings
-        # are gone. Closing them here would wipe a company's whole feed on a
-        # transient outage. An empty 200 is different - that we DID observe.
-        company.last_synced_at = now
+        # 404 everywhere: we did not observe this board, so we cannot conclude
+        # its postings are gone. Closing them here would wipe a company's whole
+        # feed on a transient outage; they expire by publication age instead.
+        # An empty 200 is different - that we DID observe. Park, recheck weekly.
+        company.gone_at = now
         db.commit()
         return 0
+    company.gone_at = None
+    if raw_jobs is NOT_MODIFIED:
+        db.commit()
+        return None
 
     active_urls = []
     expired_urls = []
@@ -493,29 +555,43 @@ async def sync_company_jobs(db, company: TrackedCompany) -> int:
         closing = closing.where(JobPosting.url.not_in(active_urls))
     db.execute(closing)
 
-    company.last_synced_at = now
     db.commit()
+    _commit_etag(company.provider, company.slug)
     return len(active_urls)
 
 
 async def _harvest_cycle() -> dict:
     """One pass over every stale company. Returns counters so the caller (and
     tests) can see what actually happened instead of guessing from stdout."""
-    stats = {"companies": 0, "kept": 0, "vendor_errors": 0, "bugs": 0, "skipped_fresh": 0}
+    stats = {"companies": 0, "kept": 0, "unchanged": 0, "vendor_errors": 0, "bugs": 0,
+             "skipped_fresh": 0, "parked": 0}
     with _db.SessionLocal() as db:
         seed_db_if_empty(db)
         companies = db.execute(select(TrackedCompany)).scalars().all()
-        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - HARVEST_INTERVAL
+        now = board_policy.utcnow()
+        cutoff, park_cutoff = now - HARVEST_INTERVAL, now - PARK_FOR
 
         for company in companies:
-            # Skip anything synced within the interval. This is also what stops a
-            # uvicorn restart from re-harvesting all ~1000 boards from scratch.
+            # Skip anything attempted within the interval. This is also what stops
+            # a uvicorn restart from re-harvesting all ~1000 boards from scratch.
             if company.last_synced_at is not None and company.last_synced_at > cutoff:
                 stats["skipped_fresh"] += 1
                 continue
+            if company.gone_at is not None and company.gone_at > park_cutoff:
+                stats["parked"] += 1
+                continue
             stats["companies"] += 1
+            # Stamp the attempt before fetching and outside the rollback below:
+            # a failing board waits the interval like any other, instead of being
+            # retried on every HARVEST_POLL pass.
+            company.last_synced_at = board_policy.utcnow()
+            db.commit()
             try:
-                stats["kept"] += await sync_company_jobs(db, company)
+                kept = await sync_company_jobs(db, company)
+                if kept is None:
+                    stats["unchanged"] += 1
+                else:
+                    stats["kept"] += kept
             except RateLimited as e:
                 db.rollback()
                 wait = min(e.retry_after, MAX_BACKOFF)
@@ -537,19 +613,23 @@ async def _harvest_cycle() -> dict:
 
     if stats["bugs"]:
         print(f"[board] ERROR {stats['bugs']} companies failed on OUR code, not the vendor's")
-    if stats["companies"] and not stats["kept"]:
+    if stats["companies"] and not stats["kept"] and not stats["unchanged"]:
         print("[board] no eligible postings in the last 14 days; see vendor_errors/bugs above")
-    print(f"[board] cycle done: {stats}")
+    if stats["companies"]:  # most passes find nothing stale; stay quiet then
+        print(f"[board] cycle done: {stats}")
     return stats
 
 
 async def harvester_loop():
+    """A pass every HARVEST_POLL seconds takes only boards staler than
+    HARVEST_INTERVAL, so each board refreshes about hourly however long a full
+    pass takes, and a newly tracked (or pasted) company is picked up next pass."""
     while True:
         try:
             await _harvest_cycle()
         except Exception:
             traceback.print_exc()
-        await asyncio.sleep(HARVEST_INTERVAL.total_seconds())
+        await asyncio.sleep(HARVEST_POLL)
 
 
 def cleanup_postings() -> int:
@@ -608,6 +688,15 @@ def track_company(db, provider: str, slug: str, source: str) -> bool:
     Returns True only when the company was new."""
     if not _SLUG_OK.fullmatch(slug):
         raise ValueError(f"refusing suspicious board slug: {slug!r}")
+    if source == "pasted":
+        existing = db.get(TrackedCompany, slug)
+        if existing is not None:
+            # The ATS API just answered for this link, so a board exists. Harvest
+            # it on the next pass instead of waiting out the interval or a park.
+            # Provider is NOT flipped (T28): if the recorded board 404s, the
+            # harvester's re-resolve finds this one; if it is live, it stays.
+            existing.gone_at, existing.last_synced_at = None, None
+            return False
     return db.execute(
         insert(TrackedCompany)
         .values(slug=slug, provider=provider, discovery_source=source)

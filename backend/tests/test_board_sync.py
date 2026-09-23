@@ -699,7 +699,7 @@ def _company(slug="acme", provider="greenhouse", last_synced=None):
 
 def test_a_restart_does_not_re_harvest_boards_synced_within_the_interval(monkeypatch):
     """A full ~1000-request cycle used to fire on every uvicorn restart."""
-    fresh = datetime.now(timezone.utc).replace(tzinfo=None)
+    fresh = board_policy.utcnow()  # the harvester's clock, pinned by posting_clock
     _company("fresh", last_synced=fresh)
     _company("stale", last_synced=fresh - board_sync.HARVEST_INTERVAL * 2)
     _company("never", last_synced=None)
@@ -911,3 +911,212 @@ def test_scout_skips_serper_without_a_key(monkeypatch):
     monkeypatch.delenv("SERPER_API_KEY", raising=False)
     with _db.SessionLocal() as db:
         assert asyncio.run(board_sync._scout_serper(object(), db)) == 0
+
+
+# --- T29: dead and moved boards, conditional GET, rolling cadence ------------
+
+from datetime import timedelta
+
+
+@pytest.fixture(autouse=True)
+def fresh_etags():
+    board_sync._ETAGS.clear(); board_sync._UNCOMMITTED_ETAGS.clear()
+    yield
+    board_sync._ETAGS.clear(); board_sync._UNCOMMITTED_ETAGS.clear()
+
+
+def _routed(routes, seen=None):
+    """Like _fake_board, but answers per vendor host and records each request.
+    routes: {host fragment: (payload, status, headers) or a callable(headers)
+    returning one}. Any host not routed answers 404, like a vendor without
+    that slug."""
+    def answer(url, headers):
+        for fragment, route in routes.items():
+            if fragment in url:
+                return route(headers) if callable(route) else route
+        return ({}, 404, {})
+
+    class Client:
+        def __init__(self, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        def stream(self, method, url, headers=None, **kw):
+            if seen is not None:
+                seen.append((url, dict(headers or {})))
+            payload, status, hdrs = answer(url, headers or {})
+            return _fake_board(payload, status=status, headers=hdrs)().stream(method, url)
+    return Client
+
+
+GH, ASHBY, LEVER = "boards-api.greenhouse.io", "api.ashbyhq.com", "api.lever.co"
+_ASHBY_JOB = {"id": "a1", "title": "Software Engineer", "location": "Austin, TX",
+              "jobUrl": "https://jobs.ashbyhq.com/acme/a1", "publishedAt": "2026-01-02T00:00:00Z"}
+_GH_JOB = {"id": 1, "title": "Software Engineer", "location": {"name": "Austin, TX"},
+           "first_published": "2026-01-02T00:00:00-05:00"}
+
+
+def _sync_acme(monkeypatch, client):
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", client)
+    with _db.SessionLocal() as db:
+        company = db.get(TrackedCompany, "acme")
+        result = asyncio.run(board_sync.sync_company_jobs(db, company))
+    with _db.SessionLocal() as db:
+        return result, db.get(TrackedCompany, "acme"), {r.url: r for r in db.query(JobPosting)}
+
+
+def test_a_board_that_moved_ats_is_followed(monkeypatch):
+    """Notion, Sentry, Zapier... 404'd on their recorded ATS for hours on end."""
+    _company("acme", provider="greenhouse")
+    kept, company, rows = _sync_acme(monkeypatch, _routed({ASHBY: ({"jobs": [_ASHBY_JOB]}, 200, {})}))
+    assert kept == 1 and company.provider == "ashby" and company.gone_at is None
+    assert list(rows) == ["https://jobs.ashbyhq.com/acme/a1"]
+
+
+def test_the_old_ats_postings_close_once_the_move_is_seen(monkeypatch):
+    _company("acme", provider="greenhouse")
+    _sync_acme(monkeypatch, _routed({GH: ({"jobs": [_GH_JOB]}, 200, {})}))
+    _, _, rows = _sync_acme(monkeypatch, _routed({ASHBY: ({"jobs": [_ASHBY_JOB]}, 200, {})}))
+    assert rows["https://job-boards.greenhouse.io/acme/jobs/1"].status == "closed"
+    assert rows["https://jobs.ashbyhq.com/acme/a1"].status == "open"
+
+
+def test_a_board_on_no_ats_is_parked_and_keeps_its_postings(monkeypatch):
+    _company("acme", provider="greenhouse")
+    _sync_acme(monkeypatch, _routed({GH: ({"jobs": [_GH_JOB]}, 200, {})}))
+    seen = []
+    kept, company, rows = _sync_acme(monkeypatch, _routed({}, seen))
+    assert kept == 0 and company.gone_at is not None and company.provider == "greenhouse"
+    assert sorted(u.split("/")[2] for u, _ in seen) == sorted([GH, LEVER, ASHBY])  # all three asked
+    assert [r.status for r in rows.values()] == ["open"]  # a 404 is not proof of closure
+
+
+def test_a_parked_board_is_skipped_until_its_weekly_recheck(monkeypatch):
+    now = board_policy.utcnow()
+    long_ago = now - board_sync.HARVEST_INTERVAL * 3
+    with _db.SessionLocal() as db:
+        db.add(TrackedCompany(slug="dead", provider="greenhouse", last_synced_at=long_ago,
+                              gone_at=now - timedelta(days=1)))
+        db.add(TrackedCompany(slug="due", provider="greenhouse", last_synced_at=long_ago,
+                              gone_at=now - board_sync.PARK_FOR - timedelta(hours=1)))
+        db.commit()
+    seen = []
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _routed({}, seen))
+    monkeypatch.setattr(board_sync, "JITTER", (0, 0))
+    stats = asyncio.run(board_sync._harvest_cycle())
+    assert stats["parked"] == 1 and stats["companies"] == 1
+    assert seen and all("/due" in u for u, _ in seen)  # only the due one was asked
+
+
+def test_a_board_that_comes_back_is_unparked(monkeypatch):
+    with _db.SessionLocal() as db:
+        db.add(TrackedCompany(slug="acme", provider="greenhouse", gone_at=datetime(2025, 1, 1)))
+        db.commit()
+    kept, company, _ = _sync_acme(monkeypatch, _routed({GH: ({"jobs": [_GH_JOB]}, 200, {})}))
+    assert kept == 1 and company.gone_at is None
+
+
+def test_a_stale_etag_on_the_other_ats_cannot_hide_a_moved_board(monkeypatch):
+    """A 304 carries no jobs, so re-resolve must ask unconditionally."""
+    _company("acme", provider="greenhouse")
+    board_sync._ETAGS[("ashby", "acme")] = '"old"'
+    ashby = lambda h: ({}, 304, {}) if "If-None-Match" in h else ({"jobs": [_ASHBY_JOB]}, 200, {})
+    kept, company, _ = _sync_acme(monkeypatch, _routed({ASHBY: ashby}))
+    assert kept == 1 and company.provider == "ashby"
+
+
+def test_an_unchanged_board_is_not_reprocessed(monkeypatch):
+    _company("acme", provider="greenhouse")
+    seen = []
+    etagged = _routed({GH: ({"jobs": [_GH_JOB]}, 200, {"ETag": 'W/"v1"'})}, seen)
+    assert _sync_acme(monkeypatch, etagged)[0] == 1
+    first_update = _sync_acme(monkeypatch, _routed({}))[2]  # sanity: rows exist
+    not_modified = lambda h: ({}, 304, {}) if h.get("If-None-Match") == 'W/"v1"' else ({"jobs": []}, 200, {})
+    kept, company, rows = _sync_acme(monkeypatch, _routed({GH: not_modified}, seen))
+    assert kept is None                                    # "unchanged", not "0 kept"
+    assert seen[-1][1]["If-None-Match"] == 'W/"v1"'
+    assert [r.status for r in rows.values()] == ["open"]   # an empty 200 would have closed it
+    assert company.gone_at is None and company.last_synced_at is not None
+    assert first_update
+
+
+def test_an_etag_is_trusted_only_after_its_rows_commit(monkeypatch):
+    """If processing crashes, the next request must refetch, not get a 304 that
+    pins whatever half-state the crash left."""
+    _company("acme", provider="greenhouse")
+    real_filter = board_sync.is_target_role
+    monkeypatch.setattr(board_sync, "is_target_role", lambda t: (_ for _ in ()).throw(NameError("bug")))
+    with pytest.raises(NameError):
+        _sync_acme(monkeypatch, _routed({GH: ({"jobs": [_GH_JOB]}, 200, {"ETag": '"v1"'})}))
+    assert board_sync._ETAGS == {}
+    # NOT monkeypatch.undo(): it would also undo conftest's temp-DB patch.
+    monkeypatch.setattr(board_sync, "is_target_role", real_filter)
+    seen = []
+    _sync_acme(monkeypatch, _routed({GH: ({"jobs": [_GH_JOB]}, 200, {"ETag": '"v2"'})}, seen))
+    assert "If-None-Match" not in seen[0][1]
+    assert board_sync._ETAGS == {("greenhouse", "acme"): '"v2"'}
+
+
+def test_an_etag_dropped_by_the_vendor_is_forgotten(monkeypatch):
+    _company("acme", provider="greenhouse")
+    _sync_acme(monkeypatch, _routed({GH: ({"jobs": [_GH_JOB]}, 200, {"ETag": '"v1"'})}))
+    _sync_acme(monkeypatch, _routed({GH: ({"jobs": [_GH_JOB]}, 200, {})}))
+    assert board_sync._ETAGS == {}
+
+
+def test_an_all_unchanged_pass_does_not_cry_empty_board(monkeypatch, capsys):
+    _company("a")
+    board_sync._ETAGS[("greenhouse", "a")] = '"v1"'
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _routed({GH: ({}, 304, {})}))
+    monkeypatch.setattr(board_sync, "JITTER", (0, 0))
+    stats = asyncio.run(board_sync._harvest_cycle())
+    assert stats["unchanged"] == 1 and stats["kept"] == 0
+    assert "no eligible postings" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("status", [503, 429])
+def test_a_failing_board_waits_the_interval_instead_of_every_pass(monkeypatch, status):
+    """With a 60s poll, an unstamped failure would be refetched ~60 times an hour."""
+    _company("a")
+    seen = []
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient",
+                        _routed({GH: ({}, status, {"Retry-After": "0"})}, seen))
+    monkeypatch.setattr(board_sync, "JITTER", (0, 0))
+    asyncio.run(board_sync._harvest_cycle())
+    second = asyncio.run(board_sync._harvest_cycle())
+    assert len(seen) == 1 and second["skipped_fresh"] == 1
+
+
+def test_a_quiet_pass_prints_nothing(monkeypatch, capsys):
+    _company("a", last_synced=board_policy.utcnow())
+    stats = asyncio.run(board_sync._harvest_cycle())
+    assert stats["skipped_fresh"] == 1 and capsys.readouterr().out == ""
+
+
+def test_the_harvester_polls_every_minute(monkeypatch):
+    slept = []
+    async def cycle(): return {}
+    async def sleep(seconds):
+        slept.append(seconds)
+        raise asyncio.CancelledError
+    monkeypatch.setattr(board_sync, "_harvest_cycle", cycle)
+    monkeypatch.setattr(board_sync.asyncio, "sleep", sleep)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(board_sync.harvester_loop())
+    assert slept == [board_sync.HARVEST_POLL] == [60]
+
+
+def test_an_existing_db_file_gains_the_gone_at_column(tmp_path, monkeypatch):
+    """create_all never ALTERs; without the migration every harvest would crash."""
+    from sqlalchemy import create_engine, inspect, text
+    from sqlalchemy.orm import sessionmaker
+    engine = create_engine(f"sqlite:///{tmp_path / 'old.db'}")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE tracked_companies (slug VARCHAR PRIMARY KEY, "
+                          "provider VARCHAR, discovery_source VARCHAR, last_synced_at DATETIME)"))
+        conn.execute(text("INSERT INTO tracked_companies VALUES ('acme', 'lever', 'github', NULL)"))
+    monkeypatch.setattr(_db, "engine", engine)
+    monkeypatch.setattr(_db, "SessionLocal", sessionmaker(bind=engine, expire_on_commit=False))
+    _db.init_db()
+    assert "gone_at" in {c["name"] for c in inspect(engine).get_columns("tracked_companies")}
+    with _db.SessionLocal() as db:
+        assert db.get(TrackedCompany, "acme").gone_at is None

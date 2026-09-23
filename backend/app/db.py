@@ -55,6 +55,7 @@ def init_db() -> None:
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(engine)
     _add_missing_columns(models.Profile)  # dev-grade migration for an existing db file
+    _add_missing_columns(models.TrackedCompany)  # T29: gone_at
     _create_missing_indexes()  # create_all only builds indexes alongside a NEW table
     with SessionLocal() as s:
         if s.get(models.Profile, "default") is None:

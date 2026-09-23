@@ -99,9 +99,13 @@ class TrackedCompany(Base):
     __tablename__ = "tracked_companies"
 
     slug: Mapped[str] = mapped_column(String, primary_key=True)
-    provider: Mapped[str] = mapped_column(String)  # ashby | greenhouse
+    provider: Mapped[str] = mapped_column(String)  # ashby | greenhouse | lever
     discovery_source: Mapped[str] = mapped_column(String, default="manual")
+    # Last harvest ATTEMPT, success or not (T29): a failing board waits the
+    # interval too. Only the harvester's staleness check reads it.
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    # Set when the board 404s on every ATS we list; rechecked weekly (T29).
+    gone_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
 
 
 class JobPosting(Base):
