@@ -2,7 +2,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from app.schemas.ats import AtsScore, JdKeyword
+from app.schemas.ats import AtsScore, JdKeyword, Requirement
 
 
 class HiringAgentReport(BaseModel):
@@ -28,3 +28,4 @@ class PipelineResult(BaseModel):
     tex: str
     report: Report
     keywords: list[JdKeyword] = []  # frozen per job: revision rounds score against the same target
+    requirements: list[Requirement] = []  # T34: frozen the same way

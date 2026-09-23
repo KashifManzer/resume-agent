@@ -1,5 +1,13 @@
 // Mirrors the backend schemas (T3/T5/T6).
 
+// T34: one screener-style check - the verdict plus the verbatim résumé quote behind it.
+export interface RequirementVerdict {
+  text: string
+  priority: 'must' | 'should'
+  verdict: 'meets' | 'unclear' | 'not_met'
+  evidence: string
+}
+
 export interface AtsScore {
   overall: number
   keyword_coverage: number
@@ -8,6 +16,7 @@ export interface AtsScore {
   matched: string[]
   missing: string[]
   rationale: string
+  requirements: RequirementVerdict[]
 }
 
 export interface HiringAgentReport {

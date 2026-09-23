@@ -3,6 +3,7 @@ import { motion } from 'motion/react'
 import { ApplicationCard } from '@/components/ApplicationCard'
 import { HiringAgentCard } from '@/components/HiringAgentCard'
 import { KeywordMarks } from '@/components/KeywordMarks'
+import { RequirementChecks } from '@/components/RequirementChecks'
 import { RevisionLog } from '@/components/RevisionLog'
 import { ScoreReveal } from '@/components/ScoreReveal'
 import { Button } from '@/components/ui/button'
@@ -164,6 +165,13 @@ export function Result({
           <motion.div variants={rise}>
             <ScoreReveal before={report.ats_before.overall} after={report.ats_after.overall} />
           </motion.div>
+
+          {report.ats_after.requirements.length > 0 && (
+            <Sheet as={motion.section} variants={rise} className="p-7">
+              <h2 className="mb-5 font-serif text-2xl text-ink">Requirements</h2>
+              <RequirementChecks requirements={report.ats_after.requirements} />
+            </Sheet>
+          )}
 
           <Sheet as={motion.section} variants={rise} className="p-7">
             <h2 className="mb-5 font-serif text-2xl text-ink">Keyword coverage</h2>

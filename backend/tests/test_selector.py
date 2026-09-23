@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from app.schemas.ats import JdKeyword
+from app.schemas.ats import JdKeyword, Requirement
 from app.schemas.selector import ResumeInput
 from app.services import selector
 
@@ -65,15 +65,20 @@ def test_extract_jd_keywords_called_once(monkeypatch):
         "extract_jd_keywords",
         lambda jd: calls.append(1) or [JdKeyword(term="python", required=True)],
     )
-    monkeypatch.setattr(selector.ats, "llm_fit", lambda jd, r: (60, "ok"))
+    reqs = [Requirement(text="BS in CS", priority="must")]
+    monkeypatch.setattr(selector.ats, "extract_requirements", lambda jd: calls.append(2) or reqs)
+    judged = []
+    monkeypatch.setattr(selector.ats, "judge_requirements", lambda r, text: judged.append(r) or [])
     resumes = [
         ResumeInput(id="a", tex=r"\begin{document}python\end{document}"),
         ResumeInput(id="b", tex=r"\begin{document}java\end{document}"),
     ]
     sel = selector.select_resume("jd", resumes)
-    assert len(calls) == 1  # hoisted out of the per-résumé loop
+    assert calls == [1, 2]  # keywords + requirements, hoisted out of the per-résumé loop
     assert sel.picked_id == "a"  # 'a' mentions python -> higher coverage
     assert sel.picked_score is not None
+    assert judged == [reqs, reqs]  # every résumé judged against the ONE extraction
+    assert sel.requirements == reqs  # handed on, frozen for the pipeline
 
 
 def test_select_resume_empty_raises():

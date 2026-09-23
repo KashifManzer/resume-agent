@@ -1,7 +1,8 @@
 """Selector: pick the JD-closest résumé from N candidates. Reuses T3's ATS
-scoring (extract JD keywords ONCE, then score each résumé) and warns when even
-the best pick is a weak match. All LLM traffic goes through ats/llm — never
-call ollama directly (gemma4:31b-cloud ignores `format`; see T3)."""
+scoring (extract the JD's keywords and requirements ONCE, then score each
+résumé) and warns when even the best pick is a weak match. All LLM traffic goes
+through ats/llm — never call ollama directly (gemma4:31b-cloud ignores `format`;
+see T3)."""
 
 import re
 
@@ -45,14 +46,16 @@ def pick_best(ranked: list[tuple[str, int]]) -> Selection:
 
 
 def select_resume(jd_text: str, resumes: list[ResumeInput]) -> Selection:
-    """Score each résumé against the JD (one keyword extraction, N fit calls)
-    and pick the closest. Attaches the picked résumé's full AtsScore for T6."""
+    """Score each résumé against the JD (one keyword + one requirement extraction,
+    N judge calls) and pick the closest. Attaches the picked résumé's full AtsScore."""
     if not resumes:
         raise ValueError("select_resume needs at least one résumé")
     keywords = ats.extract_jd_keywords(jd_text)  # hoisted: once, not per résumé
-    scores = {r.id: ats.score_with_keywords(keywords, jd_text, tex_to_text(r.tex)) for r in resumes}
+    requirements = ats.extract_requirements(jd_text)
+    scores = {r.id: ats.score_with_keywords(keywords, requirements, tex_to_text(r.tex)) for r in resumes}
 
     selection = pick_best([(r.id, scores[r.id].overall) for r in resumes])
     selection.picked_score = scores[selection.picked_id]
     selection.keywords = keywords
+    selection.requirements = requirements
     return selection

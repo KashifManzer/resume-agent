@@ -3,15 +3,16 @@ from pathlib import Path
 
 import pytest
 
-from app.schemas.ats import AtsScore, JdKeyword
+from app.schemas.ats import AtsScore, JdKeyword, Requirement
 from app.schemas.improver import ImproveResult
 from app.schemas.pipeline import HiringAgentReport, PipelineResult, Report
 from app.schemas.render import Guards, RenderResult
 from app.schemas.selector import ResumeInput, Selection
-from app.services import pipeline
+from app.services import ats as ats_mod, pipeline
 
 RESUMES = [ResumeInput(id="r1", tex="TEX1"), ResumeInput(id="r2", tex="TEX2")]
 KWS = [JdKeyword(term="Python", required=True)]
+REQS = [Requirement(text="BS in Computer Science", priority="must")]
 
 
 def _ats(overall):
@@ -49,16 +50,18 @@ def _mock(monkeypatch, scores, *, warning=None, hiring=None):
             close=warning is None,
             warning=warning,
             keywords=KWS,
+            requirements=REQS,
         ),
     )
     monkeypatch.setattr(pipeline.render, "render_tex", lambda tex, **k: _render())
     it = iter(scores)
-    monkeypatch.setattr(pipeline.ats, "score_with_keywords", lambda kws, jd, text: _ats(next(it)))
+    monkeypatch.setattr(pipeline.ats, "score_with_keywords", lambda kws, reqs, text: _ats(next(it)))
 
     def no_extract(jd):
         raise AssertionError("pipeline must reuse the selector's keywords, never re-extract")
 
     monkeypatch.setattr(pipeline.ats, "extract_jd_keywords", no_extract)
+    monkeypatch.setattr(pipeline.ats, "extract_requirements", no_extract)
     monkeypatch.setattr(
         pipeline.improver,
         "improve",
@@ -229,20 +232,42 @@ def test_revision_falls_back_to_prior_when_no_valid_candidate(monkeypatch):
 
 def test_keywords_extracted_once_and_frozen_across_rounds(monkeypatch):
     """The selector's extraction is the ONLY one: baseline, every inner round and a
-    later revision all score against it (`_mock` fails loudly on any re-extract)."""
+    later revision all score against the same keywords AND requirements (T34);
+    `_mock` fails loudly on any re-extract."""
     _mock(monkeypatch, [70])  # the spy below owns scoring
     seen = []
     scores = iter([70, 80, 90, 95, 97])
 
-    def spy(kws, jd, text):
-        seen.append(kws)
+    def spy(kws, reqs, text):
+        seen.append((kws, reqs))
         return _ats(next(scores))
 
     monkeypatch.setattr(pipeline.ats, "score_with_keywords", spy)
     first = pipeline.run_pipeline("jd", RESUMES)
-    assert first.keywords == KWS
+    assert first.keywords == KWS and first.requirements == REQS
     pipeline.run_pipeline("jd", RESUMES, feedback="shorter summary", prior=first)
-    assert seen and all(k == KWS for k in seen)
+    assert seen and all(s == (KWS, REQS) for s in seen)
+
+
+def test_a_judge_flip_on_shared_text_is_not_a_gain(monkeypatch):
+    """T34: the original is judged "unclear" on a quote the rewrite also has, and the
+    rewrite "meets" on it. That is the judge disagreeing with itself, not an
+    improvement: after reconcile both meet, so the rewrite is not kept."""
+    from app.schemas.ats import RequirementVerdict
+
+    def scored(verdict, evidence):
+        v = RequirementVerdict(text="BS in Computer Science", priority="must", verdict=verdict, evidence=evidence)
+        return ats_mod._judged(_ats(0), [v])
+
+    _mock(monkeypatch, [0])
+    monkeypatch.setattr(pipeline.render, "render_tex", lambda tex, **k: _render("Holding a BS in Computer Science"))
+    judged = iter([scored("unclear", ""), scored("meets", "Holding a BS in Computer Science")])
+    monkeypatch.setattr(pipeline.ats, "score_with_keywords", lambda kws, reqs, text: next(judged))
+    r = pipeline.run_pipeline("jd", RESUMES)
+    assert r.tex == "TEX1"  # the original, not the rewrite
+    assert r.report.ats_before.overall == r.report.ats_after.overall == 70
+    assert r.report.ats_before.requirements[0].verdict == "meets"  # re-read, with its own quote
+    assert "not above your original" in r.report.warnings[0]
 
 
 # --- live end-to-end (real select→render→score↔improve→gate; slow) ----------
