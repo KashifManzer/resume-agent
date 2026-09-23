@@ -106,6 +106,10 @@ class TrackedCompany(Base):
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     # Set when the board 404s on every ATS we list; rechecked weekly (T29).
     gone_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    # T31 frontier: when the board is next due (NULL = now; indexed, the workers
+    # pick the most overdue) and its adaptive revisit interval in seconds.
+    next_check_at: Mapped[datetime | None] = mapped_column(DateTime, default=None, index=True)
+    check_interval: Mapped[int | None] = mapped_column(default=None)
 
 
 class JobPosting(Base):

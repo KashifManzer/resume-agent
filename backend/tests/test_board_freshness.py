@@ -380,9 +380,10 @@ def test_lifespan_stops_real_background_loop_during_work_or_sleep(monkeypatch, w
         finally:
             stopped.set()
 
-    monkeypatch.setattr(board_sync, "_harvest_cycle", cycle)
+    monkeypatch.setattr(board_sync, "sync_company_jobs", cycle)  # a vendor worker's work (T31)
     monkeypatch.setattr(board_sync, "_scout_github", cycle)
     monkeypatch.setattr(board_sync, "_scout_serper", cycle)
+    monkeypatch.setattr(board_sync, "_scout_wayback", cycle)
     monkeypatch.setattr(board_sync.httpx, "AsyncClient", client)
     monkeypatch.setattr(board_sync.asyncio, "sleep", sleep)
     for name in ("harvester_loop", "scout_loop", "retention_loop"):
@@ -393,7 +394,9 @@ def test_lifespan_stops_real_background_loop_during_work_or_sleep(monkeypatch, w
             await entered.wait()
         assert stopped.is_set()
     asyncio.run(asyncio.wait_for(scenario(), timeout=2))
-    assert len(closed_clients) == (1 if worker_name == "scout_loop" else 0)
+    # Every client that was opened is closed: one per vendor worker (T31); the
+    # scout opens one per due scout (daily, weekly) and is stopped inside the first.
+    assert len(closed_clients) == {"harvester_loop": 3, "scout_loop": 1 if phase == "cycle" else 2}[worker_name]
     assert capsys.readouterr().err == ""  # Normal shutdown must not log a bug.
 
 

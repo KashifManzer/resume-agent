@@ -691,23 +691,25 @@ def test_vendor_failure_and_our_own_bug_are_told_apart(monkeypatch):
             asyncio.run(board_sync.sync_company_jobs(db, company))
 
 
-def _company(slug="acme", provider="greenhouse", last_synced=None):
+def _company(slug="acme", provider="greenhouse", last_synced=None, next_check=None):
     with _db.SessionLocal() as db:
-        c = TrackedCompany(slug=slug, provider=provider, last_synced_at=last_synced)
+        c = TrackedCompany(slug=slug, provider=provider, last_synced_at=last_synced,
+                           next_check_at=next_check)
         db.add(c); db.commit()
 
 
-def test_a_restart_does_not_re_harvest_boards_synced_within_the_interval(monkeypatch):
+def test_a_restart_only_checks_boards_that_are_due(monkeypatch):
     """A full ~1000-request cycle used to fire on every uvicorn restart."""
-    fresh = board_policy.utcnow()  # the harvester's clock, pinned by posting_clock
-    _company("fresh", last_synced=fresh)
-    _company("stale", last_synced=fresh - board_sync.HARVEST_INTERVAL * 2)
-    _company("never", last_synced=None)
+    now = board_policy.utcnow()  # the harvester's clock, pinned by posting_clock
+    _company("later", next_check=now + timedelta(minutes=5))
+    _company("due", next_check=now - timedelta(minutes=1))
+    _company("never", next_check=None)
     monkeypatch.setattr(board_sync.httpx, "AsyncClient", _fake_board({"jobs": []}))
     monkeypatch.setattr(board_sync, "JITTER", (0, 0))
     stats = asyncio.run(board_sync._harvest_cycle())
-    assert stats["skipped_fresh"] == 1
     assert stats["companies"] == 2
+    with _db.SessionLocal() as db:
+        assert db.get(TrackedCompany, "later").last_synced_at is None
 
 
 def test_one_rate_limited_vendor_does_not_stall_the_rest(monkeypatch):
@@ -803,7 +805,7 @@ def test_an_unknown_or_listless_provider_fails_clearly():
 def test_the_scout_identifies_itself_too():
     """It fetches GitHub and Serper; it was sending no User-Agent at all."""
     src = Path(board_sync.__file__).read_text()
-    scout = src[src.index("async def scout_loop"):]
+    scout = src[src.index("async def _scout("):src.index("async def scout_loop")]
     assert "AsyncClient(timeout=15.0)" not in scout, "scout client sends no User-Agent"
     assert "USER_AGENT" in scout
 
@@ -1016,21 +1018,23 @@ def test_a_board_on_no_ats_is_parked_and_keeps_its_postings(monkeypatch):
     assert [r.status for r in rows.values()] == ["open"]  # a 404 is not proof of closure
 
 
-def test_a_parked_board_is_skipped_until_its_weekly_recheck(monkeypatch):
+def test_a_parked_board_is_rechecked_after_a_week_not_before(monkeypatch):
     now = board_policy.utcnow()
-    long_ago = now - board_sync.HARVEST_INTERVAL * 3
-    with _db.SessionLocal() as db:
-        db.add(TrackedCompany(slug="dead", provider="greenhouse", last_synced_at=long_ago,
-                              gone_at=now - timedelta(days=1)))
-        db.add(TrackedCompany(slug="due", provider="greenhouse", last_synced_at=long_ago,
-                              gone_at=now - board_sync.PARK_FOR - timedelta(hours=1)))
-        db.commit()
+    _company("dead")
     seen = []
-    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _routed({}, seen))
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _routed({}, seen))  # 404 everywhere
     monkeypatch.setattr(board_sync, "JITTER", (0, 0))
-    stats = asyncio.run(board_sync._harvest_cycle())
-    assert stats["parked"] == 1 and stats["companies"] == 1
-    assert seen and all("/due" in u for u, _ in seen)  # only the due one was asked
+    asyncio.run(board_sync._harvest_cycle())
+    with _db.SessionLocal() as db:
+        c = db.get(TrackedCompany, "dead")
+        assert (c.gone_at, c.next_check_at) == (now, now + board_sync.PARK_FOR)
+    asked = len(seen)
+    monkeypatch.setattr(board_policy, "utcnow", lambda: now + board_sync.PARK_FOR - timedelta(seconds=1))
+    asyncio.run(board_sync._harvest_cycle())
+    assert len(seen) == asked                                   # a second early: not asked
+    monkeypatch.setattr(board_policy, "utcnow", lambda: now + board_sync.PARK_FOR)
+    asyncio.run(board_sync._harvest_cycle())
+    assert len(seen) > asked                                    # a week on: rechecked
 
 
 def test_a_board_that_comes_back_is_unparked(monkeypatch):
@@ -1119,26 +1123,30 @@ def test_a_failing_board_waits_the_interval_instead_of_every_pass(monkeypatch, s
     monkeypatch.setattr(board_sync, "JITTER", (0, 0))
     asyncio.run(board_sync._harvest_cycle())
     second = asyncio.run(board_sync._harvest_cycle())
-    assert len(seen) == 1 and second["skipped_fresh"] == 1
+    assert len(seen) == 1 and second["companies"] == 0
 
 
 def test_a_quiet_pass_prints_nothing(monkeypatch, capsys):
-    _company("a", last_synced=board_policy.utcnow())
+    _company("a", next_check=board_policy.utcnow() + timedelta(hours=1))
     stats = asyncio.run(board_sync._harvest_cycle())
-    assert stats["skipped_fresh"] == 1 and capsys.readouterr().out == ""
+    assert stats["companies"] == 0 and capsys.readouterr().out == ""
 
 
-def test_the_harvester_polls_every_minute(monkeypatch):
+@pytest.mark.parametrize("due_in, expected", [(12, 12.0), (3600, 30.0), (None, 30.0)])
+def test_an_idle_worker_sleeps_until_the_next_board_is_due(monkeypatch, due_in, expected):
+    """Never a busy loop, and never longer than WORKER_IDLE, so a board pasted
+    meanwhile is picked up within 30 s."""
+    if due_in is not None:
+        _company("soon", next_check=board_policy.utcnow() + timedelta(seconds=due_in))
     slept = []
-    async def cycle(): return {}
     async def sleep(seconds):
         slept.append(seconds)
         raise asyncio.CancelledError
-    monkeypatch.setattr(board_sync, "_harvest_cycle", cycle)
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _routed({}))
     monkeypatch.setattr(board_sync.asyncio, "sleep", sleep)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(board_sync.harvester_loop())
-    assert slept == [board_sync.HARVEST_POLL] == [60]
+        asyncio.run(board_sync._vendor_worker("greenhouse", board_sync._new_stats()))
+    assert slept == [expected]
 
 
 def test_an_existing_db_file_gains_the_gone_at_column(tmp_path, monkeypatch):
@@ -1155,7 +1163,9 @@ def test_an_existing_db_file_gains_the_gone_at_column(tmp_path, monkeypatch):
     _db.init_db()
     assert "gone_at" in {c["name"] for c in inspect(engine).get_columns("tracked_companies")}
     with _db.SessionLocal() as db:
-        assert db.get(TrackedCompany, "acme").gone_at is None
+        c = db.get(TrackedCompany, "acme")
+        assert (c.gone_at, c.next_check_at, c.check_interval) == (None, None, None)  # T31 columns
+    assert any("next_check_at" in ix["column_names"] for ix in inspect(engine).get_indexes("tracked_companies"))
 
 
 def test_discover_slugs_never_yields_the_greenhouse_embed_path():
@@ -1197,13 +1207,15 @@ def test_the_scout_runs_daily_across_restarts(tmp_path, monkeypatch):
     """A --reload restart used to rerun the whole scout, spending Serper credits."""
     import os, time
     monkeypatch.setattr(board_sync.config, "DATA_DIR", tmp_path)
-    assert board_sync._scout_due() is True                       # fresh install: run now
-    marker = tmp_path / "scout_last_run"
-    marker.touch()
-    assert board_sync._scout_due() is False                      # a restart an hour later
-    old = time.time() - board_sync.SCOUT_INTERVAL.total_seconds() - 1
-    os.utime(marker, (old, old))
-    assert board_sync._scout_due() is True                       # a day later
+    for name, every in (("scout_last_run", board_sync.SCOUT_INTERVAL),
+                        ("wayback_last_run", board_sync.WAYBACK_INTERVAL)):
+        assert board_sync._scout_due(name, every) is True        # fresh install: run now
+        marker = tmp_path / name
+        marker.touch()
+        assert board_sync._scout_due(name, every) is False       # a restart an hour later
+        old = time.time() - every.total_seconds() - 1
+        os.utime(marker, (old, old))
+        assert board_sync._scout_due(name, every) is True        # once the interval passed
 
 
 @pytest.mark.parametrize("fails", [False, True])
@@ -1214,18 +1226,22 @@ def test_the_marker_is_touched_only_after_a_successful_scout(tmp_path, monkeypat
             raise RuntimeError("boom")
         return 0
     async def serper(client, db): return 0
+    async def wayback(client, db): return 0
     async def stop(_): raise asyncio.CancelledError
     monkeypatch.setattr(board_sync, "_scout_github", github)
     monkeypatch.setattr(board_sync, "_scout_serper", serper)
+    monkeypatch.setattr(board_sync, "_scout_wayback", wayback)
     monkeypatch.setattr(board_sync.asyncio, "sleep", stop)
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(board_sync.scout_loop())
     assert (tmp_path / "scout_last_run").exists() is (not fails)
+    assert (tmp_path / "wayback_last_run").exists()   # one source failing never blocks another
 
 
 def test_a_scout_that_is_not_due_does_no_network_io(tmp_path, monkeypatch):
     monkeypatch.setattr(board_sync.config, "DATA_DIR", tmp_path)
     (tmp_path / "scout_last_run").touch()
+    (tmp_path / "wayback_last_run").touch()
     def no_client(**kw): raise AssertionError("scout touched the network while not due")
     async def stop(_): raise asyncio.CancelledError
     monkeypatch.setattr(board_sync.httpx, "AsyncClient", no_client)
@@ -1237,9 +1253,9 @@ def test_a_scout_that_is_not_due_does_no_network_io(tmp_path, monkeypatch):
 def test_new_and_stalest_companies_are_harvested_first(monkeypatch):
     """A pasted company (never attempted) must not wait behind the whole list."""
     now = board_policy.utcnow()
-    _company("old", last_synced=now - board_sync.HARVEST_INTERVAL * 5)
-    _company("older", last_synced=now - board_sync.HARVEST_INTERVAL * 9)
-    _company("pasted", last_synced=None)
+    _company("old", next_check=now - board_sync.HARVEST_INTERVAL * 5)
+    _company("older", next_check=now - board_sync.HARVEST_INTERVAL * 9)
+    _company("pasted", next_check=None)
     seen = []
     monkeypatch.setattr(board_sync.httpx, "AsyncClient", _routed({GH: ({"jobs": []}, 200, {})}, seen))
     monkeypatch.setattr(board_sync, "JITTER", (0, 0))
@@ -1250,12 +1266,12 @@ def test_new_and_stalest_companies_are_harvested_first(monkeypatch):
 # --- T30: one lane per vendor, peak-hours cadence, a brake per vendor --------
 
 def _companies_at(*rows):
-    """(slug, provider, minutes since last attempt) - older sorts first."""
+    """(slug, provider, minutes overdue) - the most overdue is checked first."""
     now = board_policy.utcnow()
     with _db.SessionLocal() as db:
         for slug, provider, age in rows:
             db.add(TrackedCompany(slug=slug, provider=provider,
-                                  last_synced_at=now - timedelta(minutes=age)))
+                                  next_check_at=now - timedelta(minutes=age)))
         db.commit()
 
 
@@ -1319,24 +1335,93 @@ def test_each_lane_reuses_one_connection(monkeypatch):
     assert len(made) == 3
 
 
-@pytest.mark.parametrize("hour, minute, interval", [
-    (12, 59, 60), (13, 0, 20), (19, 30, 20), (0, 59, 20), (1, 0, 60), (6, 0, 60)])
-def test_boards_refresh_every_20_minutes_in_us_business_hours(hour, minute, interval):
+H = timedelta(hours=1)
+
+
+@pytest.mark.parametrize("current, lists_target, new_jobs, peak, expected", [
+    (H, True, 2, True, 30 * 60),                  # a new job for our roles: halve
+    (25 * 60 * 1, True, 1, True, 20 * 60),        # ... never below the 20-min floor
+    (H, True, 0, True, 72 * 60),                  # nothing new: grow x1.2 (Nutch default)
+    (3 * H, True, 0, True, 3 * 3600),             # ... capped at 3 h while it lists our roles
+    (H, True, 0, False, 60 * 60),                 # overnight: no growth
+    (H, False, 0, True, 24 * 3600),               # lists none of our roles: daily
+    (24 * H, True, 0, True, 3 * 3600),            # starts listing our roles: back to 3 h
+    (24 * H, True, 3, True, 90 * 60),             # ... and posting new ones: 1.5 h, then faster
+    (H, None, 0, True, 72 * 60),                  # 304, an active board: grows
+    (24 * H, None, 0, True, 24 * 3600),           # 304, a quiet board: stays daily
+])
+def test_the_revisit_rule(current, lists_target, new_jobs, peak, expected):
+    current = current if isinstance(current, timedelta) else timedelta(seconds=current)
+    got = board_sync.next_interval(current, lists_target=lists_target, new_jobs=new_jobs, peak=peak)
+    assert got == timedelta(seconds=expected)
+
+
+@pytest.mark.parametrize("hour, peak", [(12, False), (13, True), (19, True), (0, True), (1, False)])
+def test_peak_hours_are_13_to_01_utc(hour, peak):
     """91% of weekday postings land 13:00-01:00 UTC (T30 audit)."""
-    now = datetime(2026, 9, 23, hour, minute)
-    assert board_sync.harvest_interval(now) == timedelta(minutes=interval)
+    assert board_sync._is_peak(datetime(2026, 9, 23, hour, 30)) is peak
 
 
-@pytest.mark.parametrize("hour, refetched", [(12, False), (15, True)])
-def test_a_board_checked_30_minutes_ago_is_due_only_in_peak_hours(monkeypatch, hour, refetched):
+@pytest.mark.parametrize("hour, interval_min, due_min", [(15, 30, 30), (6, 30, 60), (6, 90, 90)])
+def test_overnight_checks_are_at_most_hourly(hour, interval_min, due_min):
     at = datetime(2026, 1, 5, hour)
-    monkeypatch.setattr(board_policy, "utcnow", lambda: at)
-    _company("acme", last_synced=at - timedelta(minutes=30))
-    seen = []
-    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _empty_everywhere(seen))
+    c = TrackedCompany(slug="x", provider="greenhouse", check_interval=interval_min * 60 * 2)
+    board_sync._reschedule(c, at, lists_target=True, new_jobs=1)   # halves to interval_min
+    assert c.check_interval == interval_min * 60
+    assert c.next_check_at == at + timedelta(minutes=due_min)
+
+
+def _board_with(*jobs):
+    return _routed({GH: ({"jobs": list(jobs)}, 200, {})})
+
+
+def test_a_board_that_starts_posting_our_roles_is_checked_sooner(monkeypatch):
+    now = board_policy.utcnow().replace(hour=15)          # US business hours
+    monkeypatch.setattr(board_policy, "utcnow", lambda: now)
+    posted = (now - timedelta(hours=2)).isoformat()
+    _company("acme")
     monkeypatch.setattr(board_sync, "JITTER", (0, 0))
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _board_with(
+        {"id": 1, "title": "Software Engineer", "location": {"name": "Austin, TX"}, "first_published": posted}))
     asyncio.run(board_sync._harvest_cycle())
-    assert bool(seen) is refetched
+    with _db.SessionLocal() as db:
+        c = db.get(TrackedCompany, "acme")
+        assert c.check_interval == 30 * 60 and c.next_check_at == now + timedelta(minutes=30)
+    # Same job again: it is not new, so the board slows down x1.2.
+    monkeypatch.setattr(board_policy, "utcnow", lambda: now + timedelta(minutes=30))
+    asyncio.run(board_sync._harvest_cycle())
+    with _db.SessionLocal() as db:
+        assert db.get(TrackedCompany, "acme").check_interval == 36 * 60
+
+
+def test_a_board_without_our_roles_is_checked_daily(monkeypatch):
+    now = board_policy.utcnow().replace(hour=15)
+    monkeypatch.setattr(board_policy, "utcnow", lambda: now)
+    _company("acme")
+    monkeypatch.setattr(board_sync, "JITTER", (0, 0))
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _board_with(
+        {"id": 1, "title": "Account Executive", "location": {"name": "Austin, TX"},
+         "first_published": now.isoformat()}))
+    asyncio.run(board_sync._harvest_cycle())
+    with _db.SessionLocal() as db:
+        assert db.get(TrackedCompany, "acme").next_check_at == now + timedelta(hours=24)
+
+
+def test_an_old_job_for_our_roles_keeps_the_board_on_the_3h_ceiling(monkeypatch):
+    """Your "any SWE hiring" rule: listing our roles at all earns 3 h, not 24 h."""
+    now = board_policy.utcnow().replace(hour=15)
+    monkeypatch.setattr(board_policy, "utcnow", lambda: now)
+    _company("acme")
+    with _db.SessionLocal() as db:
+        db.get(TrackedCompany, "acme").check_interval = 24 * 3600
+        db.commit()
+    monkeypatch.setattr(board_sync, "JITTER", (0, 0))
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _board_with(
+        {"id": 1, "title": "Software Engineer", "location": {"name": "Austin, TX"},
+         "first_published": (now - timedelta(days=40)).isoformat()}))
+    asyncio.run(board_sync._harvest_cycle())
+    with _db.SessionLocal() as db:
+        assert db.get(TrackedCompany, "acme").check_interval == 3 * 3600
 
 
 def test_a_strained_vendor_is_slowed_then_recovers(monkeypatch):
@@ -1391,3 +1476,139 @@ def test_a_vendor_error_always_names_what_went_wrong(monkeypatch):
     monkeypatch.setitem(board_sync.FETCHERS, "lever", timeout)
     with pytest.raises(board_sync.BoardVendorError, match="lever/acme: ReadTimeout"):
         asyncio.run(board_sync._fetch("lever", "acme"))
+
+
+
+# --- T31: discovery from the Internet Archive, frontier health ----------------
+
+class _Cdx:
+    """Stand in for the scout client: answers the Wayback CDX API per host."""
+    def __init__(self, answers):
+        self.answers, self.asked = answers, []
+    async def get(self, url, params=None, **kw):
+        assert url == board_sync.WAYBACK_CDX
+        self.asked.append(params)
+        answer = self.answers.get(params["url"].rstrip("/"), (200, ""))
+        if isinstance(answer, Exception):
+            raise answer
+        status, text = answer
+        return type("R", (), {"status_code": status, "text": text})()
+
+
+def test_wayback_tracks_new_boards_with_staggered_first_checks():
+    now = board_policy.utcnow()
+    _company("known", provider="ashby")
+    cdx = _Cdx({
+        "jobs.ashbyhq.com": (200, "https://jobs.ashbyhq.com/newco/abc\nhttps://jobs.ashbyhq.com/known/1\n"
+                                  "https://jobs.ashbyhq.com/newco/def"),
+        "job-boards.greenhouse.io": (200, "https://job-boards.greenhouse.io/gh1/jobs/9"),
+        "boards.greenhouse.io": (200, "https://boards.greenhouse.io/embed/job_app?token=1"),
+        "jobs.lever.co": (200, "https://jobs.lever.co/lv1/uuid")})
+    with _db.SessionLocal() as db:
+        assert asyncio.run(board_sync._scout_wayback(cdx, db)) == 3     # newco, gh1, lv1
+        rows = {c.slug: c for c in db.query(TrackedCompany)}
+    assert set(rows) == {"known", "newco", "gh1", "lv1"}                # never "embed"
+    for slug in ("newco", "gh1", "lv1"):
+        assert rows[slug].discovery_source == "wayback"
+        assert now <= rows[slug].next_check_at <= now + board_sync.WAYBACK_SPREAD
+    assert rows["known"].next_check_at is None                         # untouched
+    assert {p["from"] for p in cdx.asked} == {(now - timedelta(days=365)).strftime("%Y%m%d")}
+
+
+def test_a_bulk_import_is_spread_over_a_day_not_due_at_once():
+    lines = "\n".join(f"https://jobs.lever.co/co{i}/x" for i in range(400))
+    with _db.SessionLocal() as db:
+        asyncio.run(board_sync._scout_wayback(_Cdx({"jobs.lever.co": (200, lines)}), db))
+        due = sorted(c.next_check_at for c in db.query(TrackedCompany))
+    span = (due[-1] - due[0]).total_seconds()
+    assert len(due) == 400 and span > 0.9 * board_sync.WAYBACK_SPREAD.total_seconds()
+
+
+def test_wayback_skips_a_refusing_or_failing_host_and_keeps_going(capsys):
+    cdx = _Cdx({"jobs.ashbyhq.com": (429, ""),
+                "job-boards.greenhouse.io": httpx.ReadTimeout("", request=httpx.Request("GET", "https://x")),
+                "jobs.lever.co": (200, "https://jobs.lever.co/still/x")})
+    with _db.SessionLocal() as db:
+        assert asyncio.run(board_sync._scout_wayback(cdx, db)) == 1
+    out = capsys.readouterr().out
+    assert "jobs.ashbyhq.com returned 429" in out and "ReadTimeout" in out
+    assert len(cdx.asked) == 4                                          # every host still tried
+
+
+def test_wayback_says_when_a_host_hit_the_result_limit(monkeypatch, capsys):
+    monkeypatch.setattr(board_sync, "WAYBACK_LIMIT", 2)
+    cdx = _Cdx({"jobs.lever.co": (200, "https://jobs.lever.co/a/1\nhttps://jobs.lever.co/b/1")})
+    with _db.SessionLocal() as db:
+        asyncio.run(board_sync._scout_wayback(cdx, db))
+    assert "hit the 2 URL limit" in capsys.readouterr().out
+
+
+def test_pasting_a_board_scheduled_for_later_makes_it_due_now():
+    later = board_policy.utcnow() + timedelta(hours=20)
+    _company("acme", next_check=later)
+    with _db.SessionLocal() as db:
+        board_sync.track_company(db, "greenhouse", "acme", "pasted")
+        db.commit()
+        assert db.get(TrackedCompany, "acme").next_check_at is None
+
+
+def test_an_unchanged_board_keeps_adapting(monkeypatch):
+    """A 304 carries no jobs, but "nothing new" is still information."""
+    now = board_policy.utcnow().replace(hour=15)
+    monkeypatch.setattr(board_policy, "utcnow", lambda: now)
+    _company("acme")
+    board_sync._ETAGS[("greenhouse", "acme")] = '"v1"'
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _routed({GH: ({}, 304, {})}))
+    monkeypatch.setattr(board_sync, "JITTER", (0, 0))
+    assert asyncio.run(board_sync._harvest_cycle())["unchanged"] == 1
+    with _db.SessionLocal() as db:
+        assert db.get(TrackedCompany, "acme").check_interval == 72 * 60   # 1 h x1.2
+
+
+def test_the_worker_measures_how_overdue_it_runs(monkeypatch):
+    now = board_policy.utcnow()
+    _company("late", next_check=now - timedelta(minutes=7))
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _empty_everywhere())
+    monkeypatch.setattr(board_sync, "JITTER", (0, 0))
+    assert asyncio.run(board_sync._harvest_cycle())["max_lag"] == 7 * 60
+
+
+def test_health_lines_are_printed_and_reset(monkeypatch, capsys):
+    _company("late", next_check=board_policy.utcnow() - timedelta(minutes=7))
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _empty_everywhere())
+    monkeypatch.setattr(board_sync, "JITTER", (0, 0))
+    stats = board_sync._new_stats()   # report_every=0: a report on every loop, no clock patching
+    async def stop(seconds):
+        if seconds > 0.5:                                # the idle sleep, after the report
+            raise asyncio.CancelledError
+    monkeypatch.setattr(board_sync.asyncio, "sleep", stop)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(board_sync._vendor_worker("greenhouse", stats, report_every=0))
+    out = capsys.readouterr().out
+    assert "[board] greenhouse:" in out and "'companies': 1" in out and "'max_lag': 420.0" in out
+    assert stats == board_sync._new_stats()             # reset after printing
+
+
+def test_a_quiet_vendor_window_does_not_cry_empty_feed(monkeypatch, capsys):
+    """Most tracked boards list none of our roles now; only a whole cycle
+    keeping nothing is worth the warning."""
+    stats = board_sync._new_stats()
+    stats["companies"] = 40
+    board_sync._report(stats, "lever")
+    assert "no eligible postings" not in capsys.readouterr().out
+
+
+def test_a_vendor_worker_survives_its_own_crash(monkeypatch, capsys):
+    """e.g. the DB briefly unavailable: that vendor must not go dark forever."""
+    calls = []
+    async def worker(provider, stats, **kw):
+        calls.append(provider)
+        if len(calls) == 1:
+            raise RuntimeError("database is locked")
+        raise asyncio.CancelledError
+    async def sleep(seconds): pass
+    monkeypatch.setattr(board_sync, "_vendor_worker", worker)
+    monkeypatch.setattr(board_sync.asyncio, "sleep", sleep)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(board_sync._worker_forever("lever"))
+    assert calls == ["lever", "lever"] and "database is locked" in capsys.readouterr().err

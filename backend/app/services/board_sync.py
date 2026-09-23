@@ -10,7 +10,7 @@ from datetime import datetime, timezone, timedelta
 
 import httpx
 from email.utils import parsedate_to_datetime
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, or_
 from sqlalchemy.dialects.sqlite import insert
 
 # Import the module, not the name: tests rebind db.SessionLocal to a temp
@@ -34,12 +34,19 @@ BOARD_MAX_BYTES = 64 * 1024 * 1024   # largest real board is Ashby/bjakcareer at
 # business being fetched.
 _SLUG_OK = re.compile(r"(?!.*\.\.)[A-Za-z0-9_.-]+")  # fullmatch; no ".." anywhere
 
-HARVEST_INTERVAL = timedelta(hours=1)   # per company: how stale a board may get
-# T30: 91% of weekday postings (715 of 783) land 13:00-01:00 UTC, US business
-# hours, so boards are refreshed 3x as often then and hourly overnight.
-PEAK_INTERVAL = timedelta(minutes=20)
-HARVEST_POLL = 60               # seconds between passes; each pass takes only stale boards
+# T31 adaptive revisit (Nutch AdaptiveFetchSchedule style): each board's interval
+# shrinks when a NEW job for our roles appears and grows x1.2 when nothing new,
+# within a floor and a ceiling set by whether it lists our roles at all.
+HARVEST_INTERVAL = timedelta(hours=1)   # a board's starting interval
+MIN_INTERVAL = timedelta(minutes=20)    # floor: a board that keeps posting our roles
+ACTIVE_CEILING = timedelta(hours=3)     # lists our roles, nothing new lately
+QUIET_INTERVAL = timedelta(hours=24)    # lists none of our roles: watched, cheaply
+# T30: 91% of weekday postings (715 of 783) land 13:00-01:00 UTC. Overnight,
+# intervals don't grow and boards are checked at most hourly.
+NIGHT_FLOOR = timedelta(hours=1)
 PARK_FOR = timedelta(days=7)    # a board on no ATS we list is rechecked weekly
+WORKER_IDLE = 30.0              # seconds a vendor worker sleeps when nothing is due
+HEALTH_EVERY = 600.0            # seconds between a worker's health lines
 SCOUT_INTERVAL = timedelta(hours=24)
 RETENTION_INTERVAL = 15 * 60    # independent of the potentially long harvest cycle
 JITTER = (1.0, 3.0)             # polite gap between requests to ONE vendor
@@ -516,20 +523,25 @@ async def sync_company_jobs(db, company: TrackedCompany, client=None) -> int | N
         # its postings are gone. Closing them here would wipe a company's whole
         # feed on a transient outage; they expire by publication age instead.
         # An empty 200 is different - that we DID observe. Park, recheck weekly.
-        company.gone_at = now
+        company.gone_at, company.next_check_at = now, now + PARK_FOR
         db.commit()
         return 0
     company.gone_at = None
     if raw_jobs is NOT_MODIFIED:
+        _reschedule(company, now, lists_target=None, new_jobs=0)
         db.commit()
         return None
 
+    was_open = set(db.scalars(select(JobPosting.url).where(
+        JobPosting.company_slug == company.slug, JobPosting.status == "open")))
+    lists_target = False
     active_urls = []
     expired_urls = []
     for job in raw_jobs:
         if not job.get("title") or not job.get("url"):
             continue
         matches = is_target_role(job["title"]) and is_target_location(job["location"])
+        lists_target = lists_target or matches
         posted_dt = parse_ats_date(job.get("published_at"))
         if not board_policy.is_recent(posted_dt, now):
             # A legacy stored edit timestamp can look fresh. Once a normal
@@ -565,14 +577,35 @@ async def sync_company_jobs(db, company: TrackedCompany, client=None) -> int | N
         closing = closing.where(JobPosting.url.not_in(active_urls))
     db.execute(closing)
 
+    _reschedule(company, now, lists_target=lists_target, new_jobs=len(set(active_urls) - was_open))
     db.commit()
     _commit_etag(company.provider, company.slug)
     return len(active_urls)
 
 
-def harvest_interval(now: datetime) -> timedelta:
-    """How stale a board may get: tighter in US business hours (13:00-01:00 UTC)."""
-    return PEAK_INTERVAL if now.hour >= 13 or now.hour < 1 else HARVEST_INTERVAL
+def _is_peak(now: datetime) -> bool:
+    return now.hour >= 13 or now.hour < 1
+
+
+def next_interval(current: timedelta, *, lists_target: bool | None, new_jobs: int, peak: bool) -> timedelta:
+    """The revisit rule. lists_target=None means a 304 (nothing to judge by): a
+    board above ACTIVE_CEILING can only be a quiet one, so the interval itself
+    says which ceiling applies and needs no extra column."""
+    if lists_target is None:
+        lists_target = current <= ACTIVE_CEILING
+    if not lists_target:
+        return QUIET_INTERVAL
+    current = min(current, ACTIVE_CEILING)
+    if new_jobs:
+        return max(current * 0.5, MIN_INTERVAL)   # ours: Nutch's x0.8 is for any change
+    return min(current * 1.2, ACTIVE_CEILING) if peak else current  # Nutch's default x1.2
+
+
+def _reschedule(company: TrackedCompany, now: datetime, *, lists_target: bool | None, new_jobs: int) -> None:
+    current = timedelta(seconds=company.check_interval or HARVEST_INTERVAL.total_seconds())
+    interval = next_interval(current, lists_target=lists_target, new_jobs=new_jobs, peak=_is_peak(now))
+    company.check_interval = int(interval.total_seconds())
+    company.next_check_at = now + (interval if _is_peak(now) else max(interval, NIGHT_FLOOR))
 
 
 def _strained(error: BoardVendorError) -> bool:
@@ -584,96 +617,118 @@ def _strained(error: BoardVendorError) -> bool:
         isinstance(cause, httpx.HTTPStatusError) and cause.response.status_code >= 500)
 
 
-async def _harvest_lane(provider: str, stats: dict) -> None:
-    """One vendor's stale boards, one at a time, with its own paced gap (T30).
-    Politeness is per host: the three lanes run side by side, so a pass takes
-    as long as the biggest vendor instead of all three end to end, while each
-    vendor still gets requests at least JITTER[0] apart. Like Googlebot, a lane
-    widens its gap when its vendor strains (429/5xx/timeouts) and narrows it
-    again on success; a back-off stalls only this vendor."""
+def _new_stats() -> dict:
+    return dict.fromkeys(("companies", "kept", "unchanged", "vendor_errors", "rate_limited",
+                          "bugs", "max_lag"), 0)
+
+
+async def _vendor_worker(provider: str, stats: dict, *, drain: bool = False,
+                         report_every: float | None = None) -> None:
+    """One vendor's queue of the URL frontier (T31): always check its most
+    overdue board, one at a time with a paced gap, so a pasted or newly found
+    board is picked up within seconds instead of after a whole pass. Politeness
+    is per host - three workers run side by side and each vendor still gets
+    requests at least JITTER[0] apart. Like Googlebot, it widens its gap when
+    the vendor strains (429/5xx/timeouts) and narrows it again on success.
+    drain=True returns once nothing is due (tests, one-shot runs). report_every
+    prints a health line that often - if max_lag keeps growing, this vendor is
+    over its request budget."""
     slowdown = 1.0
-    with _db.SessionLocal() as db:
-        # Stalest first, never-attempted (new or pasted) at the very front: in
-        # insert order a new company waited behind ~1000 others, a full pass.
-        companies = db.execute(select(TrackedCompany).where(TrackedCompany.provider == provider)
-                               .order_by(TrackedCompany.last_synced_at.asc().nulls_first())).scalars().all()
-        now = board_policy.utcnow()
-        cutoff, park_cutoff = now - harvest_interval(now), now - PARK_FOR
-        async with httpx.AsyncClient(timeout=BOARD_TIMEOUT) as client:
-            for company in companies:
-                # Skip anything attempted within the interval. This is also what
-                # stops a uvicorn restart from re-harvesting every board from scratch.
-                if company.last_synced_at is not None and company.last_synced_at > cutoff:
-                    stats["skipped_fresh"] += 1
-                    continue
-                if company.gone_at is not None and company.gone_at > park_cutoff:
-                    stats["parked"] += 1
-                    continue
-                stats["companies"] += 1
-                # Stamp the attempt before fetching and outside the rollback below:
-                # a failing board waits the interval like any other, instead of
-                # being retried on every HARVEST_POLL pass.
-                company.last_synced_at = board_policy.utcnow()
-                db.commit()
-                strained = False
-                try:
-                    kept = await sync_company_jobs(db, company, client)
-                    if kept is None:
-                        stats["unchanged"] += 1
-                    else:
-                        stats["kept"] += kept
-                except RateLimited as e:
-                    db.rollback()
-                    strained = True
-                    stats["rate_limited"] += 1
-                    wait = min(e.retry_after, MAX_BACKOFF)
-                    print(f"[board] {provider} asked us to back off {wait:.0f}s")
-                    await asyncio.sleep(wait)
-                except BoardVendorError as e:
-                    db.rollback()
-                    strained = _strained(e)
-                    stats["vendor_errors"] += 1
-                    print(f"[board] vendor problem: {e}")
-                except Exception:
-                    db.rollback()
-                    stats["bugs"] += 1
-                    if stats["bugs"] == 1:  # one traceback is a signal, 900 is noise
-                        traceback.print_exc()
-                slowdown = min(slowdown * 2, MAX_SLOWDOWN) if strained else max(slowdown / 2, 1.0)
-                await asyncio.sleep(random.uniform(*JITTER) * slowdown)
+    last_report = time.monotonic()
+    async with httpx.AsyncClient(timeout=BOARD_TIMEOUT) as client:
+        while True:
+            if report_every is not None and time.monotonic() - last_report >= report_every:
+                _report(stats, provider)
+                stats.update(_new_stats())
+                last_report = time.monotonic()
+            with _db.SessionLocal() as db:
+                now = board_policy.utcnow()
+                of_vendor = TrackedCompany.provider == provider
+                company = db.scalars(select(TrackedCompany).where(
+                    of_vendor, or_(TrackedCompany.next_check_at.is_(None), TrackedCompany.next_check_at <= now))
+                    .order_by(TrackedCompany.next_check_at.asc().nulls_first()).limit(1)).first()
+                if company is None:
+                    if drain:
+                        return
+                    upcoming = db.scalar(select(func.min(TrackedCompany.next_check_at)).where(of_vendor))
+                    idle = WORKER_IDLE if upcoming is None else (upcoming - now).total_seconds()
+                else:
+                    stats["companies"] += 1
+                    if company.next_check_at is not None:
+                        stats["max_lag"] = max(stats["max_lag"], (now - company.next_check_at).total_seconds())
+                    # Book the next attempt before fetching and outside the rollback
+                    # below: a failing board waits its interval like any other.
+                    company.last_synced_at = now
+                    company.next_check_at = now + timedelta(
+                        seconds=company.check_interval or HARVEST_INTERVAL.total_seconds())
+                    db.commit()
+                    strained = False
+                    try:
+                        kept = await sync_company_jobs(db, company, client)
+                        if kept is None:
+                            stats["unchanged"] += 1
+                        else:
+                            stats["kept"] += kept
+                    except RateLimited as e:
+                        db.rollback()
+                        strained = True
+                        stats["rate_limited"] += 1
+                        wait = min(e.retry_after, MAX_BACKOFF)
+                        print(f"[board] {provider} asked us to back off {wait:.0f}s")
+                        await asyncio.sleep(wait)
+                    except BoardVendorError as e:
+                        db.rollback()
+                        strained = _strained(e)
+                        stats["vendor_errors"] += 1
+                        print(f"[board] vendor problem: {e}")
+                    except Exception:
+                        db.rollback()
+                        stats["bugs"] += 1
+                        if stats["bugs"] == 1:  # one traceback is a signal, 900 is noise
+                            traceback.print_exc()
+            if company is None:
+                await asyncio.sleep(min(WORKER_IDLE, max(idle, 0.0)))
+                continue
+            slowdown = min(slowdown * 2, MAX_SLOWDOWN) if strained else max(slowdown / 2, 1.0)
+            await asyncio.sleep(random.uniform(*JITTER) * slowdown)
+
+
+def _report(stats: dict, label: str) -> None:
+    if stats["bugs"]:
+        print(f"[board] ERROR {stats['bugs']} companies failed on OUR code, not the vendor's")
+    if stats["companies"]:  # an idle window has nothing to say
+        print(f"[board] {label}: {stats}")
 
 
 async def _harvest_cycle() -> dict:
-    """One pass over every stale company, one lane per vendor. Returns counters so
-    the caller (and tests) can see what actually happened instead of guessing."""
-    stats = dict.fromkeys(("companies", "kept", "unchanged", "vendor_errors", "rate_limited",
-                           "bugs", "skipped_fresh", "parked"), 0)
+    """Check every due board once, all vendors side by side, then return the
+    counters (tests and one-shot runs; the server runs harvester_loop)."""
+    stats = _new_stats()
     with _db.SessionLocal() as db:
         seed_db_if_empty(db)
-    await asyncio.gather(*(_harvest_lane(provider, stats) for provider in FETCHERS))
-    with _db.SessionLocal() as db:
-        board_policy.prune_postings(db)
-        db.commit()
-
-    if stats["bugs"]:
-        print(f"[board] ERROR {stats['bugs']} companies failed on OUR code, not the vendor's")
+    await asyncio.gather(*(_vendor_worker(provider, stats, drain=True) for provider in FETCHERS))
+    # Whole-feed check only: one quiet vendor window keeping nothing is normal now
+    # that most tracked boards list none of our roles (T31).
     if stats["companies"] and not stats["kept"] and not stats["unchanged"]:
         print("[board] no eligible postings in the last 14 days; see vendor_errors/bugs above")
-    if stats["companies"]:  # most passes find nothing stale; stay quiet then
-        print(f"[board] cycle done: {stats}")
+    _report(stats, "cycle done")
     return stats
 
 
-async def harvester_loop():
-    """A pass every HARVEST_POLL seconds takes only boards staler than
-    harvest_interval(), so each board refreshes on that cadence however long a
-    full pass takes, and a newly tracked (or pasted) company is picked up next pass."""
+async def _worker_forever(provider: str) -> None:
+    stats = _new_stats()
     while True:
         try:
-            await _harvest_cycle()
-        except Exception:
+            await _vendor_worker(provider, stats, report_every=HEALTH_EVERY)
+        except Exception:  # e.g. the DB briefly unavailable: never let a vendor go dark
             traceback.print_exc()
-        await asyncio.sleep(HARVEST_POLL)
+            await asyncio.sleep(WORKER_IDLE)
+
+
+async def harvester_loop():
+    with _db.SessionLocal() as db:
+        seed_db_if_empty(db)
+    await asyncio.gather(*(_worker_forever(provider) for provider in FETCHERS))
 
 
 def claim_background_lock():
@@ -735,7 +790,17 @@ SERPER_SITES = ("boards.greenhouse.io", "job-boards.greenhouse.io", "jobs.ashbyh
 SERPER_PHRASES = ("software engineer", "backend engineer", "new grad software engineer",
                   "machine learning engineer", "infrastructure engineer", "full stack engineer",
                   "data engineer")
-SCOUT_CHECK = 3600  # seconds between "is the daily scout due?" checks
+SCOUT_CHECK = 3600  # seconds between "is a scout due?" checks
+
+# T31: the Internet Archive's CDX index lists every archived URL on the three
+# ATS hosts - measured 2026-09-23: ~12,600 untracked boards across the three,
+# free, no key. Weekly, one request per host; boards found this way start on a
+# check spread over a day so a bulk import never starves boards already hiring.
+WAYBACK_CDX = "https://web.archive.org/cdx/search/cdx"
+WAYBACK_HOSTS = ("jobs.ashbyhq.com", "job-boards.greenhouse.io", "boards.greenhouse.io", "jobs.lever.co")
+WAYBACK_INTERVAL = timedelta(days=7)
+WAYBACK_LIMIT = 500_000         # largest measured host (2026, 9 months) returned ~250k URLs
+WAYBACK_SPREAD = timedelta(hours=24)
 
 
 def discover_slugs(text: str) -> list[tuple[str, str]]:
@@ -756,7 +821,7 @@ def discover_slugs(text: str) -> list[tuple[str, str]]:
     return found
 
 
-def track_company(db, provider: str, slug: str, source: str) -> bool:
+def track_company(db, provider: str, slug: str, source: str, first_check_at: datetime | None = None) -> bool:
     """do_nothing, not do_update: the old version overwrote `provider` on every
     sighting, so a company listed under two ATSes flip-flopped and orphaned the
     postings harvested under the other one. A genuine ATS migration is handled
@@ -771,11 +836,11 @@ def track_company(db, provider: str, slug: str, source: str) -> bool:
             # it on the next pass instead of waiting out the interval or a park.
             # Provider is NOT flipped (T28): if the recorded board 404s, the
             # harvester's re-resolve finds this one; if it is live, it stays.
-            existing.gone_at, existing.last_synced_at = None, None
+            existing.gone_at, existing.last_synced_at, existing.next_check_at = None, None, None
             return False
     return db.execute(
         insert(TrackedCompany)
-        .values(slug=slug, provider=provider, discovery_source=source)
+        .values(slug=slug, provider=provider, discovery_source=source, next_check_at=first_check_at)
         .on_conflict_do_nothing(index_elements=["slug"])
     ).rowcount == 1
 
@@ -829,30 +894,64 @@ async def _scout_serper(client, db) -> int:
     return added
 
 
-def _scout_due() -> bool:
-    """Daily, measured across restarts. Every --reload restart used to rerun the
-    scout: a 13.6MB download and Serper credits each time. The marker is touched
-    only after a successful run, so a failed one is retried within SCOUT_CHECK."""
-    marker = config.DATA_DIR / "scout_last_run"
+async def _scout_wayback(client, db) -> int:
+    """Board slugs from a year of archived URLs. Returns how many were new."""
+    since = (board_policy.utcnow() - timedelta(days=365)).strftime("%Y%m%d")
+    added = 0
+    for host in WAYBACK_HOSTS:
+        try:
+            resp = await client.get(WAYBACK_CDX, timeout=300, params={
+                "url": host + "/", "matchType": "prefix", "from": since, "fl": "original",
+                "collapse": "urlkey", "limit": WAYBACK_LIMIT})
+        except httpx.HTTPError as e:
+            print(f"[scout] wayback {host}: {type(e).__name__}: {e}")
+            continue
+        if resp.status_code != 200:  # 429 included: the Archive blocks those who push on
+            print(f"[scout] wayback {host} returned {resp.status_code}; skipping until next week")
+            continue
+        urls = resp.text.split()
+        if len(urls) >= WAYBACK_LIMIT:
+            print(f"[scout] wayback {host}: hit the {WAYBACK_LIMIT} URL limit, some boards missed")
+        now = board_policy.utcnow()
+        new = sum(track_company(db, provider, slug, "wayback",
+                                now + random.random() * WAYBACK_SPREAD)
+                  for provider, slug in discover_slugs(" ".join(urls)))
+        db.commit()
+        added += new
+        print(f"[scout] wayback {host}: {len(urls)} URLs, {new} new boards")
+    return added
+
+
+def _scout_due(marker: str, interval: timedelta) -> bool:
+    """Measured across restarts. Every --reload restart used to rerun the scout:
+    downloads and Serper credits each time. A marker is touched only after a
+    successful run, so a failed one is retried within SCOUT_CHECK."""
     try:
-        return time.time() - marker.stat().st_mtime >= SCOUT_INTERVAL.total_seconds()
+        return time.time() - (config.DATA_DIR / marker).stat().st_mtime >= interval.total_seconds()
     except FileNotFoundError:
         return True
 
 
+async def _scout(marker: str, interval: timedelta, *sources) -> None:
+    if not _scout_due(marker, interval):
+        return
+    try:
+        async with httpx.AsyncClient(timeout=15.0, headers={"User-Agent": USER_AGENT}) as client:
+            with _db.SessionLocal() as db:
+                added = 0
+                for source in sources:
+                    added += await source(client, db)
+                total = db.execute(select(func.count()).select_from(TrackedCompany)).scalar()
+                print(f"[scout] {marker} done: {added} new companies, tracking {total}")
+        (config.DATA_DIR / marker).touch()
+    except Exception:
+        # Same rule as the harvester: a bug in our own code must be loud, not a
+        # one-line warning indistinguishable from a network hiccup.
+        traceback.print_exc()
+
+
 async def scout_loop():
     while True:
-        if _scout_due():
-            try:
-                async with httpx.AsyncClient(timeout=15.0, headers={"User-Agent": USER_AGENT}) as client:
-                    with _db.SessionLocal() as db:
-                        added = await _scout_github(client, db)
-                        added += await _scout_serper(client, db)
-                        total = db.execute(select(func.count()).select_from(TrackedCompany)).scalar()
-                        print(f"[scout] cycle done: {added} new companies, tracking {total}")
-                (config.DATA_DIR / "scout_last_run").touch()
-            except Exception:
-                # Same rule as the harvester: a bug in our own code must be loud,
-                # not a one-line warning indistinguishable from a network hiccup.
-                traceback.print_exc()
+        await _scout("scout_last_run", SCOUT_INTERVAL, _scout_github, _scout_serper)
+        await _scout("wayback_last_run", WAYBACK_INTERVAL, _scout_wayback)
         await asyncio.sleep(SCOUT_CHECK)
