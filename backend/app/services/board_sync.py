@@ -24,7 +24,7 @@ from app.services import board_policy, jd_adapters
 USER_AGENT = "Mozilla/5.0 (compatible; resume-agent/1.0; +job-board)"
 
 BOARD_TIMEOUT = 10.0          # unchanged: worst real board (lever/palantir, 6MB) takes ~1.8s
-BOARD_MAX_BYTES = 32 * 1024 * 1024   # largest real board is Ashby/openai at ~13.6MB
+BOARD_MAX_BYTES = 64 * 1024 * 1024   # largest real board is Ashby/bjakcareer at 33.6MB (2026-09-23)
 
 # Slugs come from untrusted sources (a GitHub README, Serper results) and are
 # interpolated into a vendor URL path. The host is always a literal, so this is
@@ -43,23 +43,34 @@ SEED_COMPANIES = {
 }
 
 # A title names the ROLE first and the TEAM second: "Software Engineer, Sales
-# Platform" is a SWE role, "Account Executive, AI Sales" is not. So the role,
-# seniority and discipline gates read the HEAD, while unwanted domains are
-# checked against the WHOLE title ("Software Engineer, iOS" is a mobile role
-# even though its head is generic).
+# Platform" is a SWE role, "Account Executive, AI Sales" is not. So the role and
+# discipline gates read the ROLE SEGMENT, while seniority and unwanted domains
+# are checked against the WHOLE title ("Software Engineer, iOS" is a mobile role
+# even though its head is generic; "Engineer, Senior or Staff" is senior).
 _HEAD = re.compile(r"[,–—(]| - ")
 
-# Gate 1: the head must actually name an engineering role.
+# Gate 1: the role segment must actually name an engineering role. "software"
+# alone is not a role ("Software Asset Coordinator"), but "Flight Software
+# Intern" is one.
 _ENG_ROLE = re.compile(
     r"\b(software engineer|engineer|engineering|developer|programmer|swe|sde"
-    r"|member of technical staff)\b", re.I)
+    r"|member of technical staff|software (intern(ship)?|associate|co-?op))\b", re.I)
+
+# Some heads name no role at all: an early-career marker ("Intern, Software
+# Engineering, 2027") or a program prefix before a dash ("Accelerator Program -
+# Software Engineer"). Then the role is the next segment - unless the head is a
+# person's job ("Technical Recruiter - Software Engineering").
+_MARKER_HEAD = re.compile(r"\s*(intern(ship)?|co-?op|new grad(uate)?|contract(or)?)\s*", re.I)
+_PEOPLE_ROLE = re.compile(
+    r"\b(recruit\w*|sourc\w*|coordinator|designer|technician|counsel|accountant"
+    r"|representative|consultant|officer|administrator)\b", re.I)
 
 # Gate 2: above the target band (new grad through mid). "staff" is excluded
 # EXCEPT after "technical", so "Staff Machine Learning Engineer" is rejected
 # while "Member of Technical Staff" survives.
 _TOO_SENIOR = re.compile(
     r"\b(senior|sr\.?|principal|distinguished|lead|manager|director|vp|head of"
-    r"|architect)\b|(?<!technical )\bstaff\b", re.I)
+    r"|architect|chief)\b|(?<!technical )\bstaff\b", re.I)
 
 # Gate 3: engineering, but not software.
 _NOT_SOFTWARE = re.compile(
@@ -81,21 +92,70 @@ _UNWANTED_DOMAIN = re.compile(
     r"\b(qa|sdet|ios|android|mobile)\b|quality assurance"
     r"|\b(engineer|engineering) in test\b|\btest(ing)? engineer\b", re.I)
 
+# Gate 5: positive identification of SOFTWARE work, like the location filter
+# below. Gate 3 was a denylist, and on aerospace/defense boards a bare
+# "engineer" let Propulsion, Avionics, Wiring Harness and PCB Layout roles
+# through (T29 audit: 144 of 450 kept titles). A role noun that says software
+# passes outright; a software field passes unless it names hardware; a bare
+# "engineer" needs software evidence somewhere and no hardware anywhere.
+_SOFTWARE_ROLE = re.compile(r"\b(software|developer|swe|sde|member of technical staff)\b", re.I)
+_SOFTWARE_FIELD = re.compile(
+    r"\b(programmer|back.?end|front.?end|full.?stack|web|data|analytics|ml|machine learning"
+    r"|ai|llm|agent\w*|infra\w*|platform|devops|site reliability|sre|cloud|security|devsecops"
+    r"|forward deployed|founding|research|applied|distributed|kernel|operating systems"
+    r"|compiler|database|firmware|embedded|hpc|perception|robotics software|simulation"
+    r"|growth|product engineer|red team|threat|vulnerability|grc|abuse|detection"
+    r"|incident response|identity|iam|build|performance|integration|design engineer)\b", re.I)
+# Weaker hints, trusted only when no hardware word appears in the whole title.
+# "systems" stays ambiguous-but-kept: Cloudflare's SWEs are "Systems Engineers".
+_SOFTWARE_HINT = re.compile(
+    r"\b(product|reliability|robotics|autonomy|motion planning|tools|api|systems"
+    r"|new grad|intern|internship|co-op)\b", re.I)
+_HARDWARE = re.compile(
+    r"\b(propulsion|avionics|structur\w*|mechanic\w*|mechanism\w*|fluids?|materials?|metals?"
+    r"|environmental|pcb|harness|wiring|ewis|rf|battery|powerpack|welding|hvac|construction"
+    r"|ordnance|warhead|cmm|edm|supplier|supply chain|sourcing|npi|equipment|machine maintenance"
+    r"|physical design|design verification|fpga|asic|dfx|dynamics|thermal|power generation"
+    r"|bess|solar|launch|recovery|test stand|vacuum|cryogenic|scada|controls?|automation"
+    r"|failure analysis|product quality|quality systems|liaison|material flow|technician"
+    r"|body|chassis|manufacturing|electronics|hardware)\b", re.I)
+
+
+def _role_segment(title: str) -> str:
+    sep = _HEAD.search(title)
+    if not sep:
+        return title
+    head = title[:sep.start()]
+    if _ENG_ROLE.search(head):
+        return head
+    following = _HEAD.split(title[sep.end():], 1)[0]
+    if _ENG_ROLE.search(following) and (
+            _MARKER_HEAD.fullmatch(head)
+            or (sep.group() == " - " and not _PEOPLE_ROLE.search(head)
+                and not _NOT_SOFTWARE.search(head))):
+        return following
+    return head
+
 
 def is_target_role(title: str) -> bool:
     """Backend/infra/devops/full-stack/AI-ML and generalist SWE, new grad to mid.
 
-    Four gates rather than a keyword soup. The old "match any target word, reject
+    Gates rather than a keyword soup. The old "match any target word, reject
     any exclude word" design fought itself: bare "staff" rejected "Member of
     Technical Staff", and a bare "ai" admitted "AI Recruiter" while no rule
     required the posting to be an engineering role at all.
     """
-    head = _HEAD.split(title, 1)[0]
-    if not _ENG_ROLE.search(head):
+    role = _role_segment(title)
+    if not _ENG_ROLE.search(role) or _NOT_SOFTWARE.search(role):
         return False
-    if _TOO_SENIOR.search(head) or _NOT_SOFTWARE.search(head):
+    if _TOO_SENIOR.search(title) or _UNWANTED_DOMAIN.search(title):
         return False
-    return not _UNWANTED_DOMAIN.search(title)
+    if _SOFTWARE_ROLE.search(role):
+        return True
+    if _SOFTWARE_FIELD.search(role) and not _HARDWARE.search(role):
+        return True
+    return bool(_SOFTWARE_FIELD.search(title) or _SOFTWARE_HINT.search(title)) \
+        and not _HARDWARE.search(title)
 
 
 # US + Canada, any state or city. Positive identification, not a denylist: the
@@ -127,7 +187,9 @@ _DOMESTIC = re.compile(
 # Uppercase only, and only abbreviations confirmed present in real board data.
 # "LA" is deliberately absent: both real occurrences are "Remote - LA" meaning
 # Louisiana (alongside "Remote - OK"/"Remote - TX"), which the code rule covers.
-_DOMESTIC_ABBR = re.compile(r"\b(SF|NYC|DC|CHI|SEA)\b")
+# "US" ("US Remote", "Remote - US") must count once regions are foreign, or
+# "Remote - US or Europe" would read as unknown + foreign and be dropped.
+_DOMESTIC_ABBR = re.compile(r"\b(SF|NYC|DC|CHI|SEA|US)\b")
 
 # Two-letter state/province codes. Checked only AFTER the foreign list, because
 # many collide with ISO country codes: NL is Newfoundland *and* the Netherlands,
@@ -161,7 +223,8 @@ _FOREIGN = re.compile(
     r"|cape town|johannesburg|nigeria|lagos|kenya|nairobi|egypt|cairo|morocco"
     r"|casablanca|brazil|sao paulo|rio de janeiro|mexico|cdmx|guadalajara"
     r"|argentina|buenos aires|colombia|bogota|chile|santiago|peru|lima"
-    r"|costa rica|panama|uruguay|montevideo|laos|vientiane|emea|apac|latam|anz)\b", re.I)
+    r"|costa rica|panama|uruguay|montevideo|laos|vientiane|emea|apac|latam|anz"
+    r"|europe|asia|middle east|africa|slovenia|ljubljana)\b", re.I)
 
 
 # Two-letter country codes that are NOT also a US state or Canadian province, so

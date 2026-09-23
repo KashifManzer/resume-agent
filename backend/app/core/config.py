@@ -50,6 +50,7 @@ HIRING_AGENT_DIR = Path(
 
 # JD-from-URL fetch (T10): guards on fetching arbitrary user-supplied links.
 JD_FETCH_TIMEOUT = float(os.environ.get("JD_FETCH_TIMEOUT", "10"))  # per-request seconds
-JD_FETCH_MAX_BYTES = int(os.environ.get("JD_FETCH_MAX_BYTES", str(25 * 1024 * 1024)))  # 25MB (OpenAI Ashby board is ~12.6MB)
+# Ashby has no per-job endpoint, so resolving one posting reads its whole board.
+JD_FETCH_MAX_BYTES = int(os.environ.get("JD_FETCH_MAX_BYTES", str(64 * 1024 * 1024)))  # 64MB (Ashby/bjakcareer board is 33.6MB)
 JD_FETCH_MAX_REDIRECTS = int(os.environ.get("JD_FETCH_MAX_REDIRECTS", "3"))
 JD_MIN_CHARS = int(os.environ.get("JD_MIN_CHARS", "200"))  # generic extraction below this → warn

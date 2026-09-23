@@ -105,6 +105,80 @@ def test_deliberately_kept_edge_categories():
         assert is_target_role(t) is True, t
 
 
+# --- T29: software must be positively identified ------------------------------
+# A bare "engineer" let aerospace/defense boards flood the feed: 144 of 450 kept
+# titles in the 2026-09-23 audit were hardware, facilities or supply-chain roles.
+# Every title below is real, taken from that audit.
+
+def test_hardware_and_facilities_engineering_is_rejected():
+    for t in [
+        "Propulsion Engineer (Raptor Test)", "Avionics Systems Engineer (Starship)",
+        "Systems Engineer II, Avionics", "Fluids Engineer - Propulsion Valves, Ducts, Lines",
+        "Structural Engineer (Starship Infrastructure)", "Wiring Harness Engineer",
+        "Winter 2027 EWIS Harness Engineer Co-op", "PCB Layout Engineer", "RF Electronics Engineer",
+        "Powerpack Engineer Level II", "Battery Engineer (Falcon & Dragon)",
+        "Supplier Development Engineer, SMT (Starlink)", "Physical Design Engineer, Timing",
+        "Midcore Design Verification Engineer", "Controls Engineer, Manufacturing Automation",
+        "Robotics Engineer, Manufacturing Automation", "Product Quality Engineer",
+        "Construction Project Engineer (MEP)", "Environmental Engineer, Compliance/Air Programs",
+        "HVAC Programmer", "CMM Programmer (Valves) - 2nd Shift", "Launch Vehicle Engineer",
+        "Engineer II, Propulsion - Engine Performance (R5907)",
+        "Engineering Technician, Vacuum & Cryogenic Systems",
+    ]:
+        assert is_target_role(t) is False, t
+
+
+def test_non_software_engineer_titles_without_hardware_words_are_rejected():
+    """No hardware word, but nothing says software either."""
+    for t in ["Operations Engineer (Starshield)", "Deployment Engineer", "Account Engineer",
+              "GTM Engineer", "Technical Success Engineer", "Test & Evaluation Engineer",
+              "Deployed Engineer, Professional Services", "Software Asset Coordinator"]:
+        assert is_target_role(t) is False, t
+
+
+def test_software_work_is_kept_even_when_the_team_names_hardware():
+    """The ROLE decides. A hardware word in the team must not reject a SWE."""
+    for t in [
+        "Backend Engineer, Control Plane", "Full Stack Engineer, Launch Software",
+        "Software Engineer, Manufacturing Infrastructure", "Software Supply Chain Security Engineer",
+        "Software Engineer (Controls Software)", "Firmware Engineer, Manufacturing Test",
+        "Data Engineer, Ground Network Engineering (Gateway)", "Robotics Software Engineer - Grasping",
+        "Engineer- Data Visualization Platform", "Systems Engineer, Email Service",
+        "Performance Engineer, Inference Engine", "Engine Programmer Intern",
+    ]:
+        assert is_target_role(t) is True, t
+
+
+def test_seniority_anywhere_in_the_title_is_rejected():
+    """The head-only check let the level hide in the tail."""
+    for t in [
+        "BESS Project Engineer, Senior or Staff", "Software Engineer, Full Stack (Senior, Staff+)",
+        "Site Reliability Engineer (SRE) Manager", "Member of Technical Staff - Lead, Machines",
+        "Backend Engineer - Senior", "Chief Engineer, Navy Airpower",
+    ]:
+        assert is_target_role(t) is False, t
+    for t in ["Member of Technical Staff - Storage", "Software Engineer (Staffing Platform)",
+              "Software Engineer, Leadership Tools"]:
+        assert is_target_role(t) is True, t
+
+
+def test_the_role_is_found_after_a_marker_or_program_prefix():
+    """Real titles the head-only read dropped."""
+    for t in [
+        "Intern, Software Engineering, 2027", "Flight Software Intern (Summer 2027)",
+        "Flight Software Associate (Winter 2027)", "CONTRACT - Web Development Engineer",
+        "AI Inference Core - Infrastructure SW Engineer",
+        "Binance Accelerator Programm - Software Engineer (Convert)",
+    ]:
+        assert is_target_role(t) is True, t
+
+
+def test_a_person_role_before_a_dash_is_not_rescued():
+    for t in ["Technical Recruiter - Software Engineering", "Recruiting Coordinator - Engineering",
+              "Sales - Software Engineer", "Intern, Marketing", "Contract - Account Executive"]:
+        assert is_target_role(t) is False, t
+
+
 # --- location: US + Canada, any state or city (T26 item 3) -------------------
 # The old EXCLUDE_LOCATIONS was a ~25-string denylist: it never asked "is this
 # US/Canada?", only "is this one of 25 places I know?". It has no tests at all,
@@ -219,6 +293,19 @@ def test_lowercase_words_never_match_a_state_code():
     """"OR" is Oregon, "or" is not. Codes match uppercase + comma/dash-preceded."""
     assert is_target_location("Poland - Remote OR Romania - Remote") is False
     assert is_target_location("Remote in Germany") is False
+
+
+def test_world_regions_are_foreign():
+    """T29 audit: all six were on the Board as "unknown, so kept"."""
+    for l in ["Asia", "Europe", "Remote (Europe)", "Middle East", "Middle East & North Africa",
+              "Ljubljana, Slovenia"]:
+        assert is_target_location(l) is False, l
+
+
+def test_a_region_never_hides_a_us_option():
+    """Bare "US" must count as domestic, or a region beside it drops the job."""
+    for l in ["Remote - US or Europe", "US | Europe", "Remote (US, Europe)", "US Remote"]:
+        assert is_target_location(l) is True, l
 
 
 # --- posting date (T26 finding A) -------------------------------------------
