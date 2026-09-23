@@ -30,13 +30,14 @@ async function ok(res: Response): Promise<Response> {
 /** Run a job from ad-hoc uploads OR library résumé ids (mirrors JD paste-or-link). */
 export async function createJob(
   jd: string,
-  opts: { files?: File[]; resumeIds?: string[]; applyUrl?: string | null },
+  opts: { files?: File[]; resumeIds?: string[]; applyUrl?: string | null; title?: string | null },
 ): Promise<{ job_id: string }> {
   const form = new FormData()
   form.append('jd', jd)
   for (const f of opts.files ?? []) form.append('files', f, f.name)
   for (const id of opts.resumeIds ?? []) form.append('resume_ids', id)
   if (opts.applyUrl) form.append('apply_url', opts.applyUrl) // T16: link JDs only
+  if (opts.title) form.append('title', opts.title) // T32: the posting's title (link JDs only)
   const res = await ok(await fetch('/jobs', { method: 'POST', body: form }))
   return res.json()
 }

@@ -20,9 +20,9 @@ def _ats(overall=88):
     )
 
 
-def _job(pdf: Path, apply_url=None) -> Job:
+def _job(pdf: Path, apply_url=None, title=None) -> Job:
     return Job(
-        id="j1", status="done", apply_url=apply_url,
+        id="j1", status="done", apply_url=apply_url, title=title,
         result=PipelineResult(pdf_path=pdf, tex="TEX", report=Report(ats_before=_ats(60), ats_after=_ats(88))),
     )
 
@@ -152,3 +152,14 @@ def test_endpoint_saves_then_404(tmp_path, monkeypatch):
     assert (tmp_path / body["saved_path"]).exists()
 
     assert client.post("/jobs/nope/save-local").status_code == 404
+
+
+def test_posting_title_wins_over_llm_position(env, monkeypatch):
+    """T32: Ashby JD text never names the role, so the LLM returned "" and the
+    save landed in unknown-position/. A link JD's posting title is the position."""
+    _, pdf = env
+    monkeypatch.setattr(local_save, "extract_company_position", lambda jd: ("Atomic", ""))
+    r = local_save.save_local(_job(pdf, title="Software Engineer, Backend "), "jd", "Ada")
+    assert r["position"] == "software-engineer-backend"
+    # a pasted JD (no title) still uses the LLM's answer, or the fallback
+    assert local_save.save_local(_job(pdf), "jd", "Ada")["position"] == "unknown-position"

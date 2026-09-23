@@ -72,9 +72,10 @@ class JobStore:
         self._recs: dict[str, _Record] = {}
 
     def create(
-        self, jd_text: str, resumes: list[ResumeInput], apply_url: str | None = None
+        self, jd_text: str, resumes: list[ResumeInput], apply_url: str | None = None,
+        title: str | None = None,
     ) -> Job:
-        job = Job(id=uuid4().hex, apply_url=apply_url)  # apply_url survives on the Job (T16)
+        job = Job(id=uuid4().hex, apply_url=apply_url, title=title)  # both survive on the Job (T16, T32)
         self._recs[job.id] = _Record(job=job, jd_text=jd_text, resumes=resumes)
         return job
 
@@ -89,7 +90,7 @@ class JobStore:
         return [
             JobSummary(
                 id=rec.job.id,
-                title=_title(rec.jd_text),
+                title=rec.job.title or _title(rec.jd_text),
                 status=rec.job.status,
                 created_at=rec.created_at,
                 has_pdf=rec.job.result is not None,

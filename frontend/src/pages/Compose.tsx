@@ -125,7 +125,8 @@ export function Compose() {
     // T16: carry the adapter's apply URL (only set when the JD came from a link)
     // so the Result page can offer one-click "Apply with this résumé".
     const applyUrl = source?.apply_url ?? null
-    const payload = files.length > 0 ? { jd, files, applyUrl } : { jd, resumeIds: selected, applyUrl }
+    const title = source?.title ?? null // T32: Ashby JD text never names the role
+    const payload = files.length > 0 ? { jd, files, applyUrl, title } : { jd, resumeIds: selected, applyUrl, title }
     create.mutate(payload, {
       onSuccess: (r) => {
         markTailored() // outlives the in-memory job list, so setup stays "done"

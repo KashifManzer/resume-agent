@@ -1,7 +1,8 @@
 """Save a tailored résumé into the repo for local application tracking (LOCAL-DEV
 ONLY — writes on whatever machine runs the backend). Copies job.result.pdf_path to
 TAILORED_RESUME_DIR/<company>/[<position>/]<name>_resume.pdf and upserts a row in
-applications-tracker.csv. Company/position come from one LLM call on the JD."""
+applications-tracker.csv. Company/position come from one LLM call on the JD; a
+link JD's posting title wins for position (Ashby JD text never names the role)."""
 
 import csv
 import re
@@ -108,7 +109,7 @@ def save_local(job: Job, jd_text: str, profile_name: str | None) -> dict:
 
     raw_company, raw_position = extract_company_position(jd_text)
     company = slugify(raw_company, "unknown-company")
-    position = slugify(raw_position, "unknown-position")
+    position = slugify(job.title or raw_position, "unknown-position")
     name = slugify(profile_name or "", "")
     filename = f"{name}_resume.pdf" if name else "resume.pdf"
 

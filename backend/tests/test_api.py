@@ -63,20 +63,27 @@ def test_get_missing_job_404(client):
 
 
 def test_apply_url_threads_through_create_and_read(client):
-    # T16: link JDs carry the adapter's apply URL end-to-end (create → job read).
+    # T16/T32: link JDs carry the adapter's apply URL and posting title end-to-end.
     r = client.post(
         "/jobs",
-        data={"jd": "some job description", "apply_url": "https://jobs.lever.co/acme/789"},
+        data={"jd": "At Acme, we build things.", "apply_url": "https://jobs.lever.co/acme/789",
+              "title": "Software Engineer, Backend"},
         files={"files": ("good.tex", b"\\documentclass{article}", "text/plain")},
     )
     job_id = r.json()["job_id"]
-    assert client.get(f"/jobs/{job_id}").json()["apply_url"] == "https://jobs.lever.co/acme/789"
+    job = client.get(f"/jobs/{job_id}").json()
+    assert job["apply_url"] == "https://jobs.lever.co/acme/789"
+    assert job["title"] == "Software Engineer, Backend"
+    # the run picker names the run by its role, not the JD's first line
+    assert next(j for j in client.get("/jobs").json() if j["id"] == job_id)["title"] == "Software Engineer, Backend"
 
 
 def test_paste_job_has_null_apply_url(client):
-    # No apply_url form field (a pasted JD) → null; no regression to paste flows.
+    # No apply_url/title form field (a pasted JD) → null; no regression to paste flows.
     job_id = _post_job(client).json()["job_id"]
-    assert client.get(f"/jobs/{job_id}").json()["apply_url"] is None
+    job = client.get(f"/jobs/{job_id}").json()
+    assert job["apply_url"] is None and job["title"] is None
+    assert next(j for j in client.get("/jobs").json() if j["id"] == job_id)["title"] != ""
 
 
 def test_cors_allows_extension_origin(client):

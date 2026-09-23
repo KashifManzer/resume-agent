@@ -14,10 +14,13 @@ retried on failure. The improver↔score loop lives in T6, not here.
 
 import re
 
+from pydantic import BaseModel
+
 from app.core.config import IMPROVER_COMPILE_RETRIES, OLLAMA_MODEL, OLLAMA_WRITER_MODEL
 from app.schemas.ats import AtsScore
 from app.schemas.improver import ImproveResult
 from app.services import llm
+from app.services.ats import _mentions
 from app.services.render import render_tex
 
 _BEGIN = r"\begin{document}"
@@ -45,23 +48,33 @@ _OUTPUT_FMT = (
     "Output EXACTLY this and nothing else:\n"
     "===TEX===\n<the full rewritten LaTeX body>\n===END===\n"
     "===CHANGES===\n"
-    '{"summary": "2-3 short sentences, plain English: what THIS pass did and why", '
-    '"changes": ["what you changed, one per item"], '
-    '"added": ["each skill / project / claim you ADDED that was not in the original"]}\n'
-    "===ENDCHANGES==="
+    '{"summary": "...", "changes": ["..."], "added": ["..."]}\n'
+    "===ENDCHANGES===\n"
+    # Field meanings live OUTSIDE the JSON: written as the values, gpt-oss shipped
+    # the instruction itself as a run's summary.
+    "In that JSON: summary is 2-3 short plain-English sentences on what THIS pass did "
+    "and why; changes lists what you changed, one per item; added lists each skill, "
+    "project or claim you ADDED that was not in the original."
 )
 
 _EDIT_SYS = (
     "You are an elite résumé writer optimizing a résumé to score 95%+ on ATS / "
     "JD-match for a specific job. Rewrite the LaTeX body to match the job as closely "
     "as possible. Rules:\n"
-    "- Incorporate EVERY required JD keyword, tool, and skill into the résumé — "
-    "including ones not currently present. Weave them into the skills list, the "
-    "experience bullets, and the summary so they read naturally.\n"
+    "- Make EVERY keyword in the CURRENTLY MISSING list appear, woven into the skills "
+    "list, the experience bullets, and the summary so they read naturally, and keep the "
+    "REQUIRED keywords the résumé already has. A keyword written as \"A / B / C\" lists "
+    "alternatives: the résumé needs only one, so never add the others. Add NO other "
+    "technology or tool the résumé does not already show - not the JD's nice-to-haves, "
+    "not the rest of its tech stack.\n"
     "- PROFESSIONAL SUMMARY: rewrite it to a tight 2–3 lines, 30–40 words MAX, "
     "laser-targeted to this job.\n"
-    "- Replace the FIRST project with a new JD-specific project that showcases the "
-    "job's core technologies and responsibilities.\n"
+    "- Replace the FIRST project with a new project of the candidate's OWN that "
+    "applies the required keywords and the résumé's relevant technologies to the kind "
+    "of problem this job solves. It is independent work, not the employer's: never "
+    "introduce the hiring company's name, its product, team or system names, its "
+    "customers, or its partners anywhere in the résumé, and give the project a neutral, "
+    "descriptive name.\n"
     "- Give each work-experience entry 3–4 bullet points, and each project 2–3 "
     "bullet points.\n"
     "- In the Technical Skills section, also include the soft skills the JD asks for "
@@ -125,7 +138,8 @@ def _edit_body(
     else:
         user = (
             f"JOB DESCRIPTION:\n{jd_text}\n\n"
-            f"REQUIRED JD KEYWORDS TO COVER: {ats.required_keywords}\n"
+            f"REQUIRED JD KEYWORDS (keep them covered; \"A / B\" is covered by any one option): "
+            f"{ats.required_keywords}\n"
             f"CURRENTLY MISSING — make sure these now appear in the résumé: {ats.missing}\n\n"
             f"RÉSUMÉ BODY (LaTeX — rewrite ONLY this):\n{body}\n\n"
             # Page overflow was the #1 failure: this budget took one-page success from 58%
@@ -142,6 +156,35 @@ def _edit_body(
         model=model or OLLAMA_WRITER_MODEL,
     )
     return _parse_edit(resp)
+
+
+class _Names(BaseModel):
+    names: list[str]
+
+
+def _employer_names(jd_text: str, ats: AtsScore) -> list[str]:
+    """Names the rewrite must not introduce. 8/15 real rewrites titled the new project
+    after the employer ("Coco Delivery Platform") or used its partners (DoorDash).
+    A separate call because the writer, asked to list them itself, returned none in
+    13/27 calls. Required keywords are dropped: MintMCP's JD names Claude and Codex
+    as its own tools, and they are also what the résumé must mention."""
+    try:
+        out = llm.chat(
+            [
+                {"role": "system", "content": (
+                    "From a job description, list the hiring company's name and every product, "
+                    "customer, partner or investor name it mentions - proper names only, never "
+                    'technologies or skills. Return ONLY JSON: {"names": ["Acme", "AcmeCloud"]}'
+                )},
+                {"role": "user", "content": jd_text},
+            ],
+            format=_Names.model_json_schema(),
+        )
+        names = _Names.model_validate(out).names
+    except Exception:
+        return []  # best-effort, like jd_fetch's cleanup: the prompt rule still applies
+    keys = [t for k in ats.required_keywords for t in k.split(" / ")]
+    return [n for n in names if n.strip() and not any(_mentions(n, k) or _mentions(k, n) for k in keys)]
 
 
 _BARE_AMP = re.compile(r"(?<!\\)&")
@@ -184,9 +227,11 @@ def improve(
     + an `added` review list - or the untouched original if no candidate compiles
     to one page (never ship a broken/2-page résumé)."""
     preamble, body, closing = split_tex(tex)
+    employer = [] if feedback else _employer_names(jd_text, ats)  # a revision may ask for them
     # A page that is already ~96% full fits or overflows on how lines wrap, which no
-    # prompt rule controlled: on a real run gpt-oss fit 4/10 while gemma's own retry
-    # loop fit 6/6. So the default model gets a fresh loop before we keep the original.
+    # prompt rule controlled: on one real JD + résumé gpt-oss fit 4/10 runs while gemma's
+    # own retry loop fit 6/6. So the default model gets a fresh loop before we keep the
+    # original. ponytail: worst case doubles writer calls per round (2 x 3 attempts).
     for model in dict.fromkeys((OLLAMA_WRITER_MODEL, OLLAMA_MODEL)):  # dedup: same model runs once
         error: str | None = None  # retry feedback is about THIS model's own attempt
         for _ in range(1 + IMPROVER_COMPILE_RETRIES):
@@ -196,12 +241,20 @@ def improve(
                 error = f"could not parse the edit ({e})"
                 continue
 
+            # The prompt forbids the employer's names; this catches the misses.
+            leaked = [n for n in employer if _mentions(new_body, n) and not _mentions(body, n)]
+            if leaked:
+                error = f"you introduced the employer's own names ({', '.join(leaked)}); remove every one"
+                continue
+
             new_tex = reassemble(preamble, _sanitize(new_body, body), closing)
             r = render_tex(new_tex)
             if not (r.guards.compiles and r.guards.single_page and r.guards.extraction_clean):
                 error = "; ".join(r.errors) or "the rewrite did not compile to one clean page"
                 continue
 
+            if not added:  # gpt-oss dropped the "added" key 1/10; never ship a blank review list
+                added = [m for m in ats.missing if any(_mentions(new_tex, t) for t in m.split(" / "))]
             return ImproveResult(
                 tex=new_tex,
                 changed=True,

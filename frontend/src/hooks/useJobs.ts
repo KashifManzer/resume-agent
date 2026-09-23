@@ -20,12 +20,14 @@ export function useCreateJob() {
       files,
       resumeIds,
       applyUrl,
+      title,
     }: {
       jd: string
       files?: File[]
       resumeIds?: string[]
       applyUrl?: string | null
-    }) => createJob(jd, { files, resumeIds, applyUrl }),
+      title?: string | null
+    }) => createJob(jd, { files, resumeIds, applyUrl, title }),
   })
 }
 

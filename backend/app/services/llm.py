@@ -27,11 +27,12 @@ def _loads(text: str) -> dict:
 def chat(messages: list[dict], *, format: dict | None = None, model: str | None = None) -> str | dict:
     """Send a chat request. When `format` (a pydantic JSON schema) is given,
     returns the parsed JSON dict; otherwise returns the raw text content."""
-    resp = _client().chat(
-        model=model or config.OLLAMA_MODEL,
-        messages=messages,
-        format=format,
-        options={"temperature": 0, "num_ctx": 32768},
-    )
+    with _client() as client:  # closes its connection; one leaked per call before (T32)
+        resp = client.chat(
+            model=model or config.OLLAMA_MODEL,
+            messages=messages,
+            format=format,
+            options={"temperature": 0, "num_ctx": 32768},
+        )
     content = resp["message"]["content"]
     return _loads(content) if format else content

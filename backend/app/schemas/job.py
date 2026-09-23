@@ -45,6 +45,7 @@ class Job(BaseModel):
     round: int = 0  # completed improve rounds (0 = first pass), capped at OUTER_LOOP_MAX
     rounds: list[RoundEntry] = []  # T22: the full round history, oldest first
     apply_url: str | None = None  # T16: the ATS apply form, when the JD came from a link (not a paste)
+    title: str | None = None  # T32: the ATS posting title, when the JD came from a link
     answers: list[JobAnswer] = []  # T24: application answers drafted for this run, oldest first
 
 

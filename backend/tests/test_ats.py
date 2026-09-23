@@ -33,6 +33,19 @@ def test_alias_match():
     assert pct == 1.0
 
 
+def test_alternatives_keyword_matches_any_option():
+    # T32: "AWS, Azure, or GCP" is ONE keyword; the Rivian JD's options were each
+    # marked required, so a résumé with AWS was told it was missing Azure.
+    grouped = _kw("AWS / Azure / GCP")  # options missing from aliases: the term alone still works
+    _, matched, _ = ats.keyword_coverage([grouped], "Deployed on AWS Lambda.")
+    assert matched == ["AWS / Azure / GCP"]
+    _, _, missing = ats.keyword_coverage([grouped], "Deployed on-prem.")
+    assert missing == ["AWS / Azure / GCP"]
+    # "CI/CD" has no spaced slash, so it is never split into "CI" and "CD"
+    _, _, missing = ats.keyword_coverage([_kw("CI/CD")], "a CD player")
+    assert missing == ["CI/CD"]
+
+
 def test_case_insensitive():
     _, matched, _ = ats.keyword_coverage([_kw("PostgreSQL")], "used POSTGRESQL heavily")
     assert matched == ["PostgreSQL"]

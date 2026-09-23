@@ -46,6 +46,7 @@ async def create_job(
     resume_ids: list[str] = Form(default=[]),
     files: list[UploadFile] = File(default=[]),
     apply_url: str | None = Form(default=None),  # T16: adapter's apply URL (link JDs only)
+    title: str | None = Form(default=None),  # T32: adapter's posting title (link JDs only)
 ) -> dict[str, str]:
     # ad-hoc upload (as today) OR pick from the library — mirrors JD paste-or-link
     if files:
@@ -57,7 +58,7 @@ async def create_job(
         resumes = _resumes_from_library(resume_ids)
     else:
         raise HTTPException(status_code=400, detail="provide resume_ids or files")
-    job = jobs.store.create(jd, resumes, apply_url=apply_url or None)
+    job = jobs.store.create(jd, resumes, apply_url=apply_url or None, title=title or None)
     background.add_task(jobs.store.run, job.id)
     return {"job_id": job.id}
 

@@ -25,11 +25,12 @@ def keyword_coverage(
     keywords: list[JdKeyword], resume_text: str
 ) -> tuple[float, list[str], list[str]]:
     """Pure/deterministic. Coverage over REQUIRED keywords only; a keyword is
-    matched if its term or any alias appears in the résumé."""
+    matched if its term or any alias appears in the résumé. An "A / B" term is a
+    set of alternatives (extract_jd_keywords), so any one option matches it."""
     required = [k for k in keywords if k.required]
     matched, missing = [], []
     for k in required:
-        if any(_mentions(resume_text, t) for t in [k.term, *k.aliases]):
+        if any(_mentions(resume_text, t) for t in [*k.term.split(" / "), *k.aliases]):
             matched.append(k.term)
         else:
             missing.append(k.term)
@@ -58,7 +59,10 @@ def extract_jd_keywords(jd_text: str) -> list[JdKeyword]:
                     "description (not soft skills or generic phrases). For each: the canonical "
                     "term, common aliases/synonyms (Kubernetes->[k8s], CI/CD->[cicd, ci cd]), "
                     "and required=true if the JD lists it as a requirement/must-have, false if "
-                    "nice-to-have. Return ONLY a JSON object of exactly this shape, no markdown "
+                    "nice-to-have. Alternatives the JD accepts ('Kafka or Redpanda', 'one of "
+                    "AWS, Azure, or GCP') are ONE keyword: term = the options joined with ' / ' "
+                    "(AWS / Azure / GCP), aliases = each option on its own plus their aliases. "
+                    "Return ONLY a JSON object of exactly this shape, no markdown "
                     'or prose: {"keywords": [{"term": "Kubernetes", "aliases": ["k8s"], '
                     '"required": true}]}'
                 ),
