@@ -1612,3 +1612,13 @@ def test_a_vendor_worker_survives_its_own_crash(monkeypatch, capsys):
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(board_sync._worker_forever("lever"))
     assert calls == ["lever", "lever"] and "database is locked" in capsys.readouterr().err
+
+
+
+def test_discovery_drops_ats_paths_that_are_not_boards():
+    """All measured on the live Wayback import: none of these was a live board."""
+    junk = ["api", "embed", "root.020bfab2_066d_4da7_8334_348b307461ea", "favicon.ico", "robots.txt",
+            ".sitemap.xml", "oxygen.txt", "manifest.json", "x" * 65]
+    real = ["arch.co", "kraken.com", "globalenergyallianceforpeopleandplanetgeappllc", "embedding-vc", "apiary"]
+    text = " ".join(f"jobs.ashbyhq.com/{s}/1" for s in junk + real)
+    assert [s for _, s in board_sync.discover_slugs(text)] == sorted(real)

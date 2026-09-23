@@ -803,6 +803,15 @@ WAYBACK_LIMIT = 500_000         # largest measured host (2026, 9 months) returne
 WAYBACK_SPREAD = timedelta(hours=24)
 
 
+# Path segments on the ATS hosts that are not boards. Measured on the Wayback
+# import (2026-09-23): 105 "root.<uuid>" slugs, 5 files/"api" and 51 slugs over
+# 64 chars were checked and NONE was live. "embed" (boards.greenhouse.io/embed/
+# job_app?token=...) carries a job id. Real boards reach 46 chars and may hold
+# a dot ("arch.co", "kraken.com"), so neither is rejected by itself.
+_NOT_A_BOARD = re.compile(
+    r"^(api|embed|root\..*)$|\.(txt|xml|ico|json|js|css|png|jpg|svg|html|webmanifest)$")
+
+
 def discover_slugs(text: str) -> list[tuple[str, str]]:
     """(provider, slug) pairs found in arbitrary text, already validated.
 
@@ -815,9 +824,7 @@ def discover_slugs(text: str) -> list[tuple[str, str]]:
         # lowercase BEFORE the set, or "Acme"/"acme"/"ACME" survive as three
         slugs = {m.lower() for m in pattern.findall(text)}
         found += [(provider, s) for s in sorted(slugs)
-                  # "boards.greenhouse.io/embed/job_app?token=..." carries a job
-                  # id, not a board: "embed" 404s on every vendor (2026-09-23).
-                  if _SLUG_OK.fullmatch(s) and s != "embed"]
+                  if _SLUG_OK.fullmatch(s) and len(s) <= 64 and not _NOT_A_BOARD.search(s)]
     return found
 
 
