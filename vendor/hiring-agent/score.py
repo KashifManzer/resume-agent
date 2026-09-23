@@ -3,6 +3,7 @@ import sys
 import json
 import logging
 import csv
+import hashlib
 from pdf import PDFHandler
 from github import fetch_and_display_github_info
 from models import JSONResume, EvaluationData
@@ -212,13 +213,13 @@ def find_profile(profiles, network):
 
 
 def main(pdf_path):
-    # Create cache filename based on PDF path
-    cache_filename = (
-        f"cache/resumecache_{os.path.basename(pdf_path).replace('.pdf', '')}.json"
-    )
-    github_cache_filename = (
-        f"cache/githubcache_{os.path.basename(pdf_path).replace('.pdf', '')}.json"
-    )
+    # Patched (resume-agent): key the caches on the PDF's CONTENT, not its basename.
+    # resume-agent always passes a file named resume.pdf, so a basename key served one
+    # stale résumé to every run. Same bytes still hit the cache.
+    # ponytail: one cache file pair per distinct PDF, never pruned; cache/ is gitignored.
+    pdf_key = hashlib.sha256(Path(pdf_path).read_bytes()).hexdigest()[:16]
+    cache_filename = f"cache/resumecache_{pdf_key}.json"
+    github_cache_filename = f"cache/githubcache_{pdf_key}.json"
 
     resume_data = None
     cache_loaded = False

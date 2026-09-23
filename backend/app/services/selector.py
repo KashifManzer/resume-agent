@@ -54,4 +54,5 @@ def select_resume(jd_text: str, resumes: list[ResumeInput]) -> Selection:
 
     selection = pick_best([(r.id, scores[r.id].overall) for r in resumes])
     selection.picked_score = scores[selection.picked_id]
+    selection.keywords = keywords
     return selection

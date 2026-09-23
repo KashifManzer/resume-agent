@@ -27,7 +27,15 @@ LATEX_ENGINE = os.environ.get("LATEX_ENGINE", "pdflatex")  # -lualatex/-xelatex 
 # Ollama Cloud (shared LLM client). OLLAMA_API_KEY is required for any LLM call.
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "https://ollama.com")
 OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:31b-cloud")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:31b-cloud")  # everything not routed below
+# Per-task models. Writer is gpt-oss: with improver's length budget it matched gemma
+# (92% one-page success each over 24 rewrites, same score; the shipped path measured 42/48);
+# without the budget it failed 42%. Judge stays gemma: it repeats within ~3 points,
+# gpt-oss/nemotron swung 13-16, and the inner loop keeps a rewrite on a 1-point gain.
+OLLAMA_WRITER_MODEL = os.environ.get("OLLAMA_WRITER_MODEL", "gpt-oss:120b")  # improver
+OLLAMA_JUDGE_MODEL = os.environ.get("OLLAMA_JUDGE_MODEL", OLLAMA_MODEL)  # ATS fit judge
+OLLAMA_EXTRACT_MODEL = os.environ.get("OLLAMA_EXTRACT_MODEL", OLLAMA_MODEL)  # JD keywords
+OLLAMA_ANSWER_MODEL = os.environ.get("OLLAMA_ANSWER_MODEL", OLLAMA_MODEL)  # screening answers
 
 # ATS blend: weight on grounded keyword coverage vs the LLM fit judge.
 ATS_COVERAGE_WEIGHT = float(os.environ.get("ATS_COVERAGE_WEIGHT", "0.6"))

@@ -39,14 +39,18 @@ def run_pipeline(
         selection_warning = prior.report.selection_warning
         base = render.render_tex(picked_tex)
         ats_before = prior.report.ats_after  # reuse; avoids a redundant LLM re-score
+        keywords = prior.keywords
     else:
         progress("selecting the closest résumé")
         selection = selector.select_resume(jd_text, resumes)
         picked_tex = _tex_for(selection.picked_id, resumes)
         selection_warning = selection.warning
+        # Extracted ONCE (by the selector) and frozen for the whole job, revisions
+        # included: every score in the run is measured against the same target.
+        keywords = selection.keywords
         progress("scoring the baseline")
         base = render.render_tex(picked_tex)
-        ats_before = ats.score_ats(jd_text, base.text)
+        ats_before = ats.score_with_keywords(keywords, jd_text, base.text)
 
     best_tex, best_ats, best_pdf = picked_tex, ats_before, base.pdf_path
     changes: list[str] = []
@@ -63,12 +67,18 @@ def run_pipeline(
         progress("applying your revision" if feedback else f"improving (round {i + 1})")
         imp = improver.improve(best_tex, jd_text, best_ats, feedback=feedback)
         if not imp.changed:
+            warnings += imp.warnings  # say WHY nothing changed, never a silent 91 -> 91
             break
         cand = render.render_tex(imp.tex)
         if not (cand.guards.compiles and cand.guards.single_page):
             break  # improver validates already; never trust — stop rather than ship junk
-        cand_ats = ats.score_ats(jd_text, cand.text)
+        cand_ats = ats.score_with_keywords(keywords, jd_text, cand.text)
         if not feedback and cand_ats.overall <= best_ats.overall:
+            if i == 0:  # nothing kept at all; later plateaus are the normal stop
+                warnings.append(
+                    f"the rewrite scored {cand_ats.overall}, not above your original's "
+                    f"{best_ats.overall}, so the original was kept"
+                )
             break  # plateau / regression — discard this round, keep the best so far
         # accepted: record only what we actually keep, so the report matches the final résumé
         best_tex, best_ats, best_pdf = imp.tex, cand_ats, cand.pdf_path
@@ -102,4 +112,4 @@ def run_pipeline(
         hiring_agent=hiring,
         warnings=warnings,
     )
-    return PipelineResult(pdf_path=best_pdf, tex=best_tex, report=report)
+    return PipelineResult(pdf_path=best_pdf, tex=best_tex, report=report, keywords=keywords)

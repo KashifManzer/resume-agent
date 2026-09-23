@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from app.schemas.ats import AtsScore
+from app.schemas.ats import AtsScore, JdKeyword
 from app.schemas.improver import ImproveResult
 from app.schemas.pipeline import HiringAgentReport, PipelineResult, Report
 from app.schemas.render import Guards, RenderResult
@@ -11,6 +11,7 @@ from app.schemas.selector import ResumeInput, Selection
 from app.services import pipeline
 
 RESUMES = [ResumeInput(id="r1", tex="TEX1"), ResumeInput(id="r2", tex="TEX2")]
+KWS = [JdKeyword(term="Python", required=True)]
 
 
 def _ats(overall):
@@ -47,11 +48,17 @@ def _mock(monkeypatch, scores, *, warning=None, hiring=None):
             ranked=[{"id": rs[0].id, "score": scores[0]}],
             close=warning is None,
             warning=warning,
+            keywords=KWS,
         ),
     )
     monkeypatch.setattr(pipeline.render, "render_tex", lambda tex, **k: _render())
     it = iter(scores)
-    monkeypatch.setattr(pipeline.ats, "score_ats", lambda jd, text: _ats(next(it)))
+    monkeypatch.setattr(pipeline.ats, "score_with_keywords", lambda kws, jd, text: _ats(next(it)))
+
+    def no_extract(jd):
+        raise AssertionError("pipeline must reuse the selector's keywords, never re-extract")
+
+    monkeypatch.setattr(pipeline.ats, "extract_jd_keywords", no_extract)
     monkeypatch.setattr(
         pipeline.improver,
         "improve",
@@ -82,6 +89,26 @@ def test_inner_loop_keeps_best_stops_on_plateau_gate_once(monkeypatch):
     assert r.report.added == ["Rust"]  # deduped
     assert r.report.hiring_agent is not None
     assert r.report.selection_warning is None
+    assert r.report.warnings == []  # a later-round plateau is the normal stop, not news
+
+
+def test_first_round_without_gain_says_why(monkeypatch):
+    # baseline 91, the only rewrite scores 91 → original kept, and the report says so
+    _mock(monkeypatch, [91, 91])
+    r = pipeline.run_pipeline("jd", RESUMES)
+    assert r.report.changes == []
+    assert r.report.warnings == ["the rewrite scored 91, not above your original's 91, so the original was kept"]
+
+
+def test_invalid_rewrite_reason_is_surfaced(monkeypatch):
+    _mock(monkeypatch, [91])
+    monkeypatch.setattr(
+        pipeline.improver, "improve",
+        lambda *a, **k: ImproveResult(tex="TEX1", changed=False, compiled=True, single_page=True,
+                                      warnings=["could not produce a valid ≤1-page rewrite; kept the original"]),
+    )
+    r = pipeline.run_pipeline("jd", RESUMES)
+    assert r.report.warnings == ["could not produce a valid ≤1-page rewrite; kept the original"]
 
 
 def test_inner_loop_capped_at_max(monkeypatch):
@@ -198,6 +225,24 @@ def test_revision_falls_back_to_prior_when_no_valid_candidate(monkeypatch):
     r = pipeline.run_pipeline("jd", RESUMES, feedback="do something", prior=_prior())
     assert r.tex == "PRIOR"
     assert r.report.ats_after.overall == 99  # the prior's score, untouched
+
+
+def test_keywords_extracted_once_and_frozen_across_rounds(monkeypatch):
+    """The selector's extraction is the ONLY one: baseline, every inner round and a
+    later revision all score against it (`_mock` fails loudly on any re-extract)."""
+    _mock(monkeypatch, [70])  # the spy below owns scoring
+    seen = []
+    scores = iter([70, 80, 90, 95, 97])
+
+    def spy(kws, jd, text):
+        seen.append(kws)
+        return _ats(next(scores))
+
+    monkeypatch.setattr(pipeline.ats, "score_with_keywords", spy)
+    first = pipeline.run_pipeline("jd", RESUMES)
+    assert first.keywords == KWS
+    pipeline.run_pipeline("jd", RESUMES, feedback="shorter summary", prior=first)
+    assert seen and all(k == KWS for k in seen)
 
 
 # --- live end-to-end (real select→render→score↔improve→gate; slow) ----------

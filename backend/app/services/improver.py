@@ -14,7 +14,7 @@ retried on failure. The improver↔score loop lives in T6, not here.
 
 import re
 
-from app.core.config import IMPROVER_COMPILE_RETRIES
+from app.core.config import IMPROVER_COMPILE_RETRIES, OLLAMA_WRITER_MODEL
 from app.schemas.ats import AtsScore
 from app.schemas.improver import ImproveResult
 from app.services import llm
@@ -126,13 +126,40 @@ def _edit_body(
             f"JOB DESCRIPTION:\n{jd_text}\n\n"
             f"REQUIRED JD KEYWORDS TO COVER: {ats.required_keywords}\n"
             f"CURRENTLY MISSING — make sure these now appear in the résumé: {ats.missing}\n\n"
-            f"RÉSUMÉ BODY (LaTeX — rewrite ONLY this):\n{body}"
+            f"RÉSUMÉ BODY (LaTeX — rewrite ONLY this):\n{body}\n\n"
+            # Page overflow was the #1 failure: this budget took one-page success from 58%
+            # to 92% (gpt-oss) and 79% to 92% (gemma), 24 rewrites each, in fewer calls.
+            f"LENGTH BUDGET: the body above is {len(body)} characters and fills exactly one "
+            f"page. Your rewritten body must be no longer than {len(body)} characters - "
+            "replace content, do not add to it."
         )
     if error:
         user += f"\n\nYOUR PREVIOUS ATTEMPT FAILED: {error}\nReturn a corrected version."
     system = _REVISE_SYS if feedback else _EDIT_SYS
-    resp = llm.chat([{"role": "system", "content": system}, {"role": "user", "content": user}])
+    resp = llm.chat(
+        [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        model=OLLAMA_WRITER_MODEL,
+    )
     return _parse_edit(resp)
+
+
+_BARE_AMP = re.compile(r"(?<!\\)&")
+
+
+def _sanitize(new_body: str, original_body: str) -> str:
+    """Fix LaTeX the writer gets wrong, all seen in real rewrites:
+    - bare `&` in prose ("Infrastructure & DevOps") and U+202F (narrow no-break
+      space) fail to compile, and gpt-oss repeats them on retry. `&` is escaped only
+      when the original body had no bare `&`, so a body that tabulates is left alone.
+    - `~1 hour` and `40%` compile but silently corrupt the page ("from  1 hour",
+      or the rest of the line dropped), so no retry would ever catch them. A `%`
+      comment line never follows a digit, so comments are untouched.
+    ponytail: only the observed cases; anything else still falls to the retry loop."""
+    if not _BARE_AMP.search(original_body):
+        new_body = _BARE_AMP.sub(r"\\&", new_body)
+    new_body = re.sub(r"(?<!\\)~(?=\d)", r"$\\sim$", new_body)  # ~1 → ∼1
+    new_body = re.sub(r"(?<=\d)%", r"\\%", new_body)  # 40% → 40\%
+    return new_body.replace("\u202f", " ")
 
 
 def _baseline(tex: str, **over) -> ImproveResult:
@@ -165,7 +192,7 @@ def improve(
             error = f"could not parse the edit ({e})"
             continue
 
-        new_tex = reassemble(preamble, new_body, closing)
+        new_tex = reassemble(preamble, _sanitize(new_body, body), closing)
         r = render_tex(new_tex)
         if not (r.guards.compiles and r.guards.single_page and r.guards.extraction_clean):
             error = "; ".join(r.errors) or "the rewrite did not compile to one clean page"

@@ -18,9 +18,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.canonical import ANSWER_CANONICAL, ANSWER_CLASSIFY, NEVER_AUTO
+from app.core.config import OLLAMA_ANSWER_MODEL
 from app.models import Answer, AnswerResolution
 from app.schemas.answer import AnswerResult
 from app.services import llm
+from app.services.selector import tex_to_text
 
 PID = "default"
 
@@ -300,13 +302,15 @@ def _llm_answer(question: str, template: str, jd: str, tex: str, *,
                     if unstored_fact
                     else ""
                 )
-                + f"--- Job description ---\n{jd[:6000]}\n\n--- Tailored résumé ---\n{tex[:6000]}\n\n"
+                # Plain text, not raw LaTeX: the preamble + markup pushed Projects and
+                # Achievements past the 6000-char cap, so the model never saw them.
+                + f"--- Job description ---\n{jd[:6000]}\n\n--- Tailored résumé ---\n{tex_to_text(tex)[:6000]}\n\n"
                 + (f"{links}\n\n" if links else "")
                 + 'Return {"answer":"<text or empty>"}'
             ),
         },
     ]
-    resp = llm.chat(messages, format=_AnswerOut.model_json_schema())
+    resp = llm.chat(messages, format=_AnswerOut.model_json_schema(), model=OLLAMA_ANSWER_MODEL)
     return resp.get("answer", "") if isinstance(resp, dict) else ""
 
 

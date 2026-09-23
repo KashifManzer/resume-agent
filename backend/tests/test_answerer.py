@@ -260,7 +260,7 @@ def test_adapt_prompt_regrounds_on_current_resume_and_drops_unsupported(monkeypa
     résumé this recruiter reads. The prompt must say DROP it, not preserve it."""
     seen = {}
 
-    def fake_chat(messages, format=None):
+    def fake_chat(messages, format=None, **_):
         seen["prompt"] = messages[1]["content"]
         return {"answer": "drafted"}
 
@@ -271,6 +271,27 @@ def test_adapt_prompt_regrounds_on_current_resume_and_drops_unsupported(monkeypa
     assert "RESUME TEX" in prompt  # re-grounded on THIS job's tailored résumé
     assert "DROP any template claim it does not support" in prompt
     assert "preserve every fact" not in prompt.lower()
+
+
+def test_answer_sees_sections_past_the_preamble(monkeypatch):
+    """Raw LaTeX cut at 6000 chars lost Projects/Achievements behind a ~1.4k preamble
+    on real résumés. The prompt must carry plain résumé text, down to the last section."""
+    seen = {}
+
+    def fake_chat(messages, format=None, **_):
+        seen["prompt"] = messages[1]["content"]
+        return {"answer": "drafted"}
+
+    tex = (
+        "\\documentclass{article}\n" + "\\usepackage{enumitem}\n" * 300
+        + "\\begin{document}\n\\section{Experience}\n" + "\\textbf{Shipped} services. " * 150
+        + "\\section{Selected Projects}\n\\textbf{OmniAgent} governance platform\n\\end{document}\n"
+    )
+    monkeypatch.setattr(answerer.llm, "chat", fake_chat)
+    answerer._llm_answer("Describe a project you built.", "", "JD", tex)
+
+    assert "OmniAgent" in seen["prompt"]
+    assert "\\usepackage" not in seen["prompt"]
 
 
 def test_save_mode_defaults_by_category():
@@ -287,7 +308,7 @@ def test_behavioral_questions_are_answered_not_refused(monkeypatch):
     application questions."""
     seen = {}
 
-    def fake_chat(messages, format=None):
+    def fake_chat(messages, format=None, **_):
         seen["system"] = messages[0]["content"]
         return {"answer": "drafted"}
 
@@ -371,7 +392,7 @@ def test_empty_verbatim_bank_row_drafts_instead_of_dead_ending(monkeypatch):
 
 def test_unstored_fact_prompt_forbids_inventing_a_number(monkeypatch):
     captured = {}
-    monkeypatch.setattr(answerer.llm, "chat", lambda m, format=None: captured.update(p=m[1]["content"]) or {"answer": "x"})
+    monkeypatch.setattr(answerer.llm, "chat", lambda m, format=None, **_: captured.update(p=m[1]["content"]) or {"answer": "x"})
     answerer._llm_answer("Desired salary?", "", "JD", "TEX", unstored_fact=True)
     assert "invent NO specific number, date or amount" in captured["p"]
     # ...but a fact the résumé DOES support must still be stated plainly, or

@@ -45,7 +45,9 @@ def test_never_worse_returns_original(monkeypatch):
     monkeypatch.setattr(
         improver,
         "_edit_body",
-        lambda b, jd, ats, err=None: (r"\undefinedcmd breaks compile", ["x"], ["y"]),
+        # matches _edit_body's real arity/return shape, so the COMPILE guard is what rejects
+        # it - a stale stub used to raise inside improve() and pass via the parse-error path
+        lambda *a, **k: (r"\undefinedcmd breaks compile", ["x"], ["y"], ""),
     )
     result = improver.improve(GOOD, "jd", _ats())
     assert result.changed is False
@@ -53,6 +55,31 @@ def test_never_worse_returns_original(monkeypatch):
     assert result.compiled is True  # the original does compile
     assert result.single_page is True
     assert result.warnings
+
+
+def test_sanitize_fixes_gpt_oss_latex_breakers():
+    # bare & escaped, an existing \& untouched, U+202F (pdflatex rejects it) → space
+    out = improver._sanitize("Infrastructure & DevOps, R\\&D, 10 000 users", "clean body")
+    assert out == "Infrastructure \\& DevOps, R\\&D, 10 000 users"
+    # a body that already tabulates with bare & is never rewritten
+    assert improver._sanitize("a & b", "x & y") == "a & b"
+
+
+def test_aggressive_pass_carries_length_budget_revision_does_not(monkeypatch):
+    seen = []
+    monkeypatch.setattr(improver.llm, "chat", lambda msgs, **k: seen.append(msgs[1]["content"]) or "===TEX===\nx\n===END===")
+    improver._edit_body("B" * 123, "jd", _ats())
+    improver._edit_body("B" * 123, "jd", _ats(), feedback="shorter")
+    assert "no longer than 123 characters" in seen[0]
+    assert "LENGTH BUDGET" not in seen[1]  # a human-directed revision is not length-capped
+
+
+def test_sanitize_fixes_silent_corruption_but_keeps_comments():
+    body = "%-----EXPERIENCE-----\n\\resumeItem{from ~1 hour, up 40% and 92\\% AUC, by ~30\\%}"
+    assert improver._sanitize(body, "") == (
+        "%-----EXPERIENCE-----\n\\resumeItem{from $\\sim$1 hour, up 40\\% and 92\\% AUC, by $\\sim$30\\%}"
+    )
+    assert improver._sanitize("Fig.~A and \\~{}", "") == "Fig.~A and \\~{}"  # ~ before a non-digit stays
 
 
 # --- live: aggressive rewrite closes gaps and stays valid ------------------

@@ -6,7 +6,7 @@ import re
 
 from pydantic import BaseModel
 
-from app.core.config import ATS_COVERAGE_WEIGHT
+from app.core.config import ATS_COVERAGE_WEIGHT, OLLAMA_EXTRACT_MODEL, OLLAMA_JUDGE_MODEL
 from app.schemas.ats import AtsScore, JdKeyword
 from app.services import llm
 
@@ -66,6 +66,7 @@ def extract_jd_keywords(jd_text: str) -> list[JdKeyword]:
             {"role": "user", "content": jd_text},
         ],
         format=_JdKeywords.model_json_schema(),
+        model=OLLAMA_EXTRACT_MODEL,
     )
     return _JdKeywords.model_validate(out).keywords
 
@@ -89,6 +90,7 @@ def llm_fit(jd_text: str, resume_text: str) -> tuple[int, str]:
             {"role": "user", "content": f"JOB DESCRIPTION:\n{jd_text}\n\nRÉSUMÉ:\n{resume_text}"},
         ],
         format=_Fit.model_json_schema(),
+        model=OLLAMA_JUDGE_MODEL,
     )
     fit = _Fit.model_validate(out)
     return max(0, min(100, fit.score)), fit.rationale
