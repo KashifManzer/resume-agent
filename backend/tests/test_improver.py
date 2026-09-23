@@ -57,6 +57,31 @@ def test_never_worse_returns_original(monkeypatch):
     assert result.warnings
 
 
+def test_default_model_retries_fresh_after_writer_fails(monkeypatch):
+    """gpt-oss overflowed a 96%-full page on a real run (4/10 fit); gemma's own
+    retry loop fit 6/6, so it gets a fresh try before the original is kept."""
+    good_body = improver.split_tex(GOOD)[1]
+    calls = []
+
+    def fake(body, jd, ats, error, feedback, model):
+        calls.append((model, error))
+        ok = model == "default-model"
+        return (good_body if ok else r"\undefinedcmd", ["c"], ["a"], "s")
+
+    monkeypatch.setattr(improver, "_edit_body", fake)
+    monkeypatch.setattr(improver, "OLLAMA_WRITER_MODEL", "writer-model")
+    monkeypatch.setattr(improver, "OLLAMA_MODEL", "default-model")
+    result = improver.improve(GOOD, "jd", _ats())
+    assert result.changed is True
+    assert [m for m, _ in calls] == ["writer-model"] * 3 + ["default-model"]
+    assert calls[3][1] is None  # the fallback starts fresh, not with the writer's error
+
+    calls.clear()
+    monkeypatch.setattr(improver, "OLLAMA_MODEL", "writer-model")  # same model: no second loop
+    assert improver.improve(GOOD, "jd", _ats()).changed is False
+    assert len(calls) == 3
+
+
 def test_sanitize_fixes_gpt_oss_latex_breakers():
     # bare & escaped, an existing \& untouched, U+202F (pdflatex rejects it) → space
     out = improver._sanitize("Infrastructure & DevOps, R\\&D, 10 000 users", "clean body")

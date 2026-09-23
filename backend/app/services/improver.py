@@ -14,7 +14,7 @@ retried on failure. The improver↔score loop lives in T6, not here.
 
 import re
 
-from app.core.config import IMPROVER_COMPILE_RETRIES, OLLAMA_WRITER_MODEL
+from app.core.config import IMPROVER_COMPILE_RETRIES, OLLAMA_MODEL, OLLAMA_WRITER_MODEL
 from app.schemas.ats import AtsScore
 from app.schemas.improver import ImproveResult
 from app.services import llm
@@ -113,7 +113,8 @@ def _parse_edit(resp: str) -> tuple[str, list[str], list[str], str]:
 
 
 def _edit_body(
-    body: str, jd_text: str, ats: AtsScore, error: str | None = None, feedback: str | None = None
+    body: str, jd_text: str, ats: AtsScore, error: str | None = None, feedback: str | None = None,
+    model: str | None = None,
 ):
     if feedback:
         user = (
@@ -138,7 +139,7 @@ def _edit_body(
     system = _REVISE_SYS if feedback else _EDIT_SYS
     resp = llm.chat(
         [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        model=OLLAMA_WRITER_MODEL,
+        model=model or OLLAMA_WRITER_MODEL,
     )
     return _parse_edit(resp)
 
@@ -183,29 +184,32 @@ def improve(
     + an `added` review list - or the untouched original if no candidate compiles
     to one page (never ship a broken/2-page résumé)."""
     preamble, body, closing = split_tex(tex)
-    error: str | None = None
+    # A page that is already ~96% full fits or overflows on how lines wrap, which no
+    # prompt rule controlled: on a real run gpt-oss fit 4/10 while gemma's own retry
+    # loop fit 6/6. So the default model gets a fresh loop before we keep the original.
+    for model in dict.fromkeys((OLLAMA_WRITER_MODEL, OLLAMA_MODEL)):  # dedup: same model runs once
+        error: str | None = None  # retry feedback is about THIS model's own attempt
+        for _ in range(1 + IMPROVER_COMPILE_RETRIES):
+            try:
+                new_body, changes, added, summary = _edit_body(body, jd_text, ats, error, feedback, model)
+            except Exception as e:
+                error = f"could not parse the edit ({e})"
+                continue
 
-    for _ in range(1 + IMPROVER_COMPILE_RETRIES):
-        try:
-            new_body, changes, added, summary = _edit_body(body, jd_text, ats, error, feedback)
-        except Exception as e:
-            error = f"could not parse the edit ({e})"
-            continue
+            new_tex = reassemble(preamble, _sanitize(new_body, body), closing)
+            r = render_tex(new_tex)
+            if not (r.guards.compiles and r.guards.single_page and r.guards.extraction_clean):
+                error = "; ".join(r.errors) or "the rewrite did not compile to one clean page"
+                continue
 
-        new_tex = reassemble(preamble, _sanitize(new_body, body), closing)
-        r = render_tex(new_tex)
-        if not (r.guards.compiles and r.guards.single_page and r.guards.extraction_clean):
-            error = "; ".join(r.errors) or "the rewrite did not compile to one clean page"
-            continue
-
-        return ImproveResult(
-            tex=new_tex,
-            changed=True,
-            changes=changes,
-            added=added,
-            summary=summary,
-            compiled=True,
-            single_page=True,
-        )
+            return ImproveResult(
+                tex=new_tex,
+                changed=True,
+                changes=changes,
+                added=added,
+                summary=summary,
+                compiled=True,
+                single_page=True,
+            )
 
     return _baseline(tex, warnings=["could not produce a valid ≤1-page rewrite; kept the original"])
