@@ -2,10 +2,10 @@
 DIRECTED when the caller passes the user's `feedback` (T22).
 
 Product decision: maximize ATS/JD match (target 95%+) — inject every required JD
-keyword (including current gaps), rewrite the summary tight, and swap the first
-project for a JD-specific one. This is the user's own résumé; they review and own
-every claim, so the pass reports an `added` list (what was newly claimed) for
-transparency instead of refusing to add it.
+keyword (including current gaps), rewrite the summary tight, and add a project of
+the candidate's own only when a required keyword is still missing (T33). This is the
+user's own résumé; they review and own every claim, so the pass reports an `added`
+list (what was newly claimed) for transparency instead of refusing to add it.
 
 Still enforced structurally: edits touch the BODY only (preamble/closing reattached
 byte-for-byte), and every candidate must compile to ONE page (T2 render_tex),
@@ -67,18 +67,22 @@ _EDIT_SYS = (
     "alternatives: the résumé needs only one, so never add the others. Add NO other "
     "technology or tool the résumé does not already show - not the JD's nice-to-haves, "
     "not the rest of its tech stack.\n"
+    "- Where the résumé names a required skill differently from the JD, also use the "
+    "JD's word once (e.g. \"PostgreSQL (Postgres)\"): recruiters search the JD's exact words.\n"
+    "- NEVER remove degrees, years of experience, job titles, employers, or dates.\n"
     "- PROFESSIONAL SUMMARY: rewrite it to a tight 2–3 lines, 30–40 words MAX, "
-    "laser-targeted to this job.\n"
-    "- Replace the FIRST project with a new project of the candidate's OWN that "
-    "applies the required keywords and the résumé's relevant technologies to the kind "
-    "of problem this job solves. It is independent work, not the employer's: never "
-    "introduce the hiring company's name, its product, team or system names, its "
-    "customers, or its partners anywhere in the résumé, and give the project a neutral, "
-    "descriptive name.\n"
-    "- Give each work-experience entry 3–4 bullet points, and each project 2–3 "
-    "bullet points.\n"
-    "- In the Technical Skills section, also include the soft skills the JD asks for "
-    "(e.g. communication, collaboration, ownership) if they aren't already there.\n"
+    "laser-targeted to this job: lead with the role, years of experience and any degree "
+    "it states, then required skills the résumé proves. No soft-skill adjectives or "
+    "soft-skill lists anywhere.\n"
+    "- PAST JOBS: keep each entry's bullet count and rewrite its existing bullets; never "
+    "add new bullets or new numbers to them.\n"
+    "- PROJECTS: keep the candidate's real projects, most relevant to this job first, and "
+    "follow the NEW PROJECT line in the request. A new project is the candidate's OWN "
+    "independent work, not the employer's: never introduce the hiring company's name, its "
+    "product, team or system names, its customers, or its partners anywhere in the résumé, "
+    "and give it a neutral, descriptive name. Each project has 2–3 bullet points.\n"
+    "- Keep \\textbf on technologies as the original does, and bold required keywords in "
+    "new text.\n"
     "- Keep it to ONE page. Preserve the LaTeX structure, commands, and environments "
     "so it compiles. Do NOT touch anything outside the body you are given.\n"
     "- This is the user's own résumé; they will review and own every claim.\n"
@@ -140,8 +144,13 @@ def _edit_body(
             f"JOB DESCRIPTION:\n{jd_text}\n\n"
             f"REQUIRED JD KEYWORDS (keep them covered; \"A / B\" is covered by any one option): "
             f"{ats.required_keywords}\n"
-            f"CURRENTLY MISSING — make sure these now appear in the résumé: {ats.missing}\n\n"
-            f"RÉSUMÉ BODY (LaTeX — rewrite ONLY this):\n{body}\n\n"
+            f"CURRENTLY MISSING — make sure these now appear in the résumé: {ats.missing}\n"
+            # T33: an invented project replaced a real, relevant one on every run, and was
+            # the whole judge gain (96 -> 92 with the real one back). Only a gap earns one.
+            + (f"NEW PROJECT: allowed, only to show {ats.missing} - replace the least relevant project.\n\n"
+               if ats.missing else
+               "NEW PROJECT: not allowed - every required keyword is covered; keep the real projects.\n\n")
+            + f"RÉSUMÉ BODY (LaTeX — rewrite ONLY this):\n{body}\n\n"
             # Page overflow was the #1 failure: this budget took one-page success from 58%
             # to 92% (gpt-oss) and 79% to 92% (gemma), 24 rewrites each, in fewer calls.
             f"LENGTH BUDGET: the body above is {len(body)} characters and fills exactly one "
@@ -258,7 +267,9 @@ def improve(
             return ImproveResult(
                 tex=new_tex,
                 changed=True,
-                changes=changes,
+                # a malformed changes block parses to []; the Result page reads an empty
+                # list as "original kept", so a shipped rewrite always says something
+                changes=changes or ["Rewrote the résumé for this job (no change list returned)"],
                 added=added,
                 summary=summary,
                 compiled=True,

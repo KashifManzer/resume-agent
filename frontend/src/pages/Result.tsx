@@ -33,6 +33,8 @@ export function Result({
   onStartOver: () => void
 }) {
   const { report } = result
+  // The original was kept: no rewrite scored higher or none fit one page (T33 made this common)
+  const untouched = report.changes.length === 0 && report.added.length === 0
   const entrance = useEntrance()
   const save = useSaveLocal()
 
@@ -47,11 +49,12 @@ export function Result({
         <div>
           <Kicker>proof approved</Kicker>
           <h1 className="mt-3 font-serif text-5xl leading-[0.95] tracking-[-0.02em] text-cream sm:text-6xl lg:text-7xl">
-            Your tailored résumé
+            {untouched ? 'Your résumé, kept as is' : 'Your tailored résumé'}
           </h1>
           <p className="mt-4 max-w-md text-sm leading-relaxed text-cream-soft">
-            Tailored to the role and compiled to one page. Review what we added below — every claim
-            is yours to stand behind.
+            {untouched
+              ? 'No rewrite improved on your original for this role, so it goes unchanged. The note under Proof rounds says why.'
+              : 'Tailored to the role and compiled to one page. Review what we added below — every claim is yours to stand behind.'}
           </p>
         </div>
         <button

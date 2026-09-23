@@ -90,11 +90,12 @@ def test_review_list_never_silently_empty(monkeypatch):
     review list then falls back to the gap keywords the rewrite now claims."""
     body = improver.split_tex(GOOD)[1].replace("Python", "Python, Elixir", 1)
     monkeypatch.setattr(improver, "_employer_names", lambda jd, ats: [])  # hermetic: no LLM
-    monkeypatch.setattr(improver, "_edit_body", lambda *a, **k: (body, ["c"], [], "s"))
+    monkeypatch.setattr(improver, "_edit_body", lambda *a, **k: (body, [], [], "s"))
     # GOOD says "scalable" but never "Scala": a substring match would wrongly list it
     result = improver.improve(GOOD, "jd", _ats(missing=("Elixir", "Scala", "Tokio / Elixir")))
     assert result.changed is True
     assert result.added == ["Elixir", "Tokio / Elixir"]  # a grouped term counts on any option
+    assert result.changes  # nor a blank change list: the UI reads [] + [] as "original kept"
 
 
 def test_sanitize_fixes_gpt_oss_latex_breakers():
@@ -112,6 +113,19 @@ def test_aggressive_pass_carries_length_budget_revision_does_not(monkeypatch):
     improver._edit_body("B" * 123, "jd", _ats(), feedback="shorter")
     assert "no longer than 123 characters" in seen[0]
     assert "LENGTH BUDGET" not in seen[1]  # a human-directed revision is not length-capped
+
+
+def test_new_project_only_when_a_required_keyword_is_missing(monkeypatch):
+    """T33: the rewrite swapped a real, relevant project for an invented one on every
+    run, and that swap was the whole judge gain. Code, not the model, decides."""
+    seen = []
+    monkeypatch.setattr(improver.llm, "chat", lambda msgs, **k: seen.append(msgs[1]["content"]) or "===TEX===\nx\n===END===")
+    improver._edit_body("B", "jd", _ats(missing=()))
+    improver._edit_body("B", "jd", _ats(missing=("Apache Flink",)))
+    improver._edit_body("B", "jd", _ats(missing=("Apache Flink",)), feedback="shorter")
+    assert "NEW PROJECT: not allowed" in seen[0]
+    assert "NEW PROJECT: allowed, only to show ['Apache Flink']" in seen[1]
+    assert "NEW PROJECT" not in seen[2]  # a revision does only what the user asked
 
 
 def test_sanitize_fixes_silent_corruption_but_keeps_comments():
