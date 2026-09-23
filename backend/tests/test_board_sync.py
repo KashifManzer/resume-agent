@@ -1226,3 +1226,16 @@ def test_a_scout_that_is_not_due_does_no_network_io(tmp_path, monkeypatch):
     monkeypatch.setattr(board_sync.asyncio, "sleep", stop)
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(board_sync.scout_loop())
+
+
+def test_new_and_stalest_companies_are_harvested_first(monkeypatch):
+    """A pasted company (never attempted) must not wait behind the whole list."""
+    now = board_policy.utcnow()
+    _company("old", last_synced=now - board_sync.HARVEST_INTERVAL * 5)
+    _company("older", last_synced=now - board_sync.HARVEST_INTERVAL * 9)
+    _company("pasted", last_synced=None)
+    seen = []
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _routed({GH: ({"jobs": []}, 200, {})}, seen))
+    monkeypatch.setattr(board_sync, "JITTER", (0, 0))
+    asyncio.run(board_sync._harvest_cycle())
+    assert [u.split("/")[-2] for u, _ in seen] == ["pasted", "older", "old"]

@@ -569,7 +569,10 @@ async def _harvest_cycle() -> dict:
              "skipped_fresh": 0, "parked": 0}
     with _db.SessionLocal() as db:
         seed_db_if_empty(db)
-        companies = db.execute(select(TrackedCompany)).scalars().all()
+        # Stalest first, never-attempted (new or pasted) at the very front: in
+        # insert order a new company waited behind ~1000 others, a full pass.
+        companies = db.execute(select(TrackedCompany).order_by(
+            TrackedCompany.last_synced_at.asc().nulls_first())).scalars().all()
         now = board_policy.utcnow()
         cutoff, park_cutoff = now - HARVEST_INTERVAL, now - PARK_FOR
 
