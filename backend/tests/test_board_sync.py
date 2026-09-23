@@ -1342,13 +1342,14 @@ H = timedelta(hours=1)
     (H, True, 2, True, 30 * 60),                  # a new job for our roles: halve
     (25 * 60 * 1, True, 1, True, 20 * 60),        # ... never below the 20-min floor
     (H, True, 0, True, 72 * 60),                  # nothing new: grow x1.2 (Nutch default)
-    (3 * H, True, 0, True, 3 * 3600),             # ... capped at 3 h while it lists our roles
+    (2 * H, True, 0, True, 2 * 3600),             # ... capped at 2 h while it lists our roles
     (H, True, 0, False, 60 * 60),                 # overnight: no growth
     (H, False, 0, True, 24 * 3600),               # lists none of our roles: daily
-    (24 * H, True, 0, True, 3 * 3600),            # starts listing our roles: back to 3 h
-    (24 * H, True, 3, True, 90 * 60),             # ... and posting new ones: 1.5 h, then faster
+    (24 * H, True, 0, True, 2 * 3600),            # starts listing our roles: back to 2 h
+    (24 * H, True, 3, True, 60 * 60),             # ... and posting new ones: 1 h, then faster
     (H, None, 0, True, 72 * 60),                  # 304, an active board: grows
     (24 * H, None, 0, True, 24 * 3600),           # 304, a quiet board: stays daily
+    (3 * H, None, 0, True, 2 * 3600),             # 304 on a board from the old 3 h ceiling: still active
 ])
 def test_the_revisit_rule(current, lists_target, new_jobs, peak, expected):
     current = current if isinstance(current, timedelta) else timedelta(seconds=current)
@@ -1362,7 +1363,7 @@ def test_peak_hours_are_13_to_01_utc(hour, peak):
     assert board_sync._is_peak(datetime(2026, 9, 23, hour, 30)) is peak
 
 
-@pytest.mark.parametrize("hour, interval_min, due_min", [(15, 30, 30), (6, 30, 60), (6, 90, 90)])
+@pytest.mark.parametrize("hour, interval_min, due_min", [(15, 30, 30), (6, 30, 60), (6, 60, 60)])
 def test_overnight_checks_are_at_most_hourly(hour, interval_min, due_min):
     at = datetime(2026, 1, 5, hour)
     c = TrackedCompany(slug="x", provider="greenhouse", check_interval=interval_min * 60 * 2)
@@ -1407,8 +1408,8 @@ def test_a_board_without_our_roles_is_checked_daily(monkeypatch):
         assert db.get(TrackedCompany, "acme").next_check_at == now + timedelta(hours=24)
 
 
-def test_an_old_job_for_our_roles_keeps_the_board_on_the_3h_ceiling(monkeypatch):
-    """Your "any SWE hiring" rule: listing our roles at all earns 3 h, not 24 h."""
+def test_an_old_job_for_our_roles_keeps_the_board_on_the_2h_ceiling(monkeypatch):
+    """Your "any SWE hiring" rule: listing our roles at all earns 2 h, not 24 h."""
     now = board_policy.utcnow().replace(hour=15)
     monkeypatch.setattr(board_policy, "utcnow", lambda: now)
     _company("acme")
@@ -1421,7 +1422,7 @@ def test_an_old_job_for_our_roles_keeps_the_board_on_the_3h_ceiling(monkeypatch)
          "first_published": (now - timedelta(days=40)).isoformat()}))
     asyncio.run(board_sync._harvest_cycle())
     with _db.SessionLocal() as db:
-        assert db.get(TrackedCompany, "acme").check_interval == 3 * 3600
+        assert db.get(TrackedCompany, "acme").check_interval == 2 * 3600
 
 
 def test_a_strained_vendor_is_slowed_then_recovers(monkeypatch):

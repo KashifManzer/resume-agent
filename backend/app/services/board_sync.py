@@ -39,7 +39,9 @@ _SLUG_OK = re.compile(r"(?!.*\.\.)[A-Za-z0-9_.-]+")  # fullmatch; no ".." anywhe
 # within a floor and a ceiling set by whether it lists our roles at all.
 HARVEST_INTERVAL = timedelta(hours=1)   # a board's starting interval
 MIN_INTERVAL = timedelta(minutes=20)    # floor: a board that keeps posting our roles
-ACTIVE_CEILING = timedelta(hours=3)     # lists our roles, nothing new lately
+ACTIVE_CEILING = timedelta(hours=2)     # lists our roles, nothing new lately
+# 2 h, not 3: measured at 3 h the harvester used ~50% of its budget; projected
+# 1 h = Ashby 95%. 2 h spends the headroom on freshness (T31 re-audit).
 QUIET_INTERVAL = timedelta(hours=24)    # lists none of our roles: watched, cheaply
 # T30: 91% of weekday postings (715 of 783) land 13:00-01:00 UTC. Overnight,
 # intervals don't grow and boards are checked at most hourly.
@@ -588,11 +590,12 @@ def _is_peak(now: datetime) -> bool:
 
 
 def next_interval(current: timedelta, *, lists_target: bool | None, new_jobs: int, peak: bool) -> timedelta:
-    """The revisit rule. lists_target=None means a 304 (nothing to judge by): a
-    board above ACTIVE_CEILING can only be a quiet one, so the interval itself
-    says which ceiling applies and needs no extra column."""
+    """The revisit rule. lists_target=None means a 304 (nothing to judge by):
+    quiet boards sit exactly on QUIET_INTERVAL, so the interval itself says
+    which kind a board is and needs no extra column. Compared against QUIET,
+    not ACTIVE_CEILING, so changing the ceiling can't reclassify boards."""
     if lists_target is None:
-        lists_target = current <= ACTIVE_CEILING
+        lists_target = current < QUIET_INTERVAL
     if not lists_target:
         return QUIET_INTERVAL
     current = min(current, ACTIVE_CEILING)
