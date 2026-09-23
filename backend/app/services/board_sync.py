@@ -35,12 +35,16 @@ BOARD_MAX_BYTES = 64 * 1024 * 1024   # largest real board is Ashby/bjakcareer at
 _SLUG_OK = re.compile(r"(?!.*\.\.)[A-Za-z0-9_.-]+")  # fullmatch; no ".." anywhere
 
 HARVEST_INTERVAL = timedelta(hours=1)   # per company: how stale a board may get
+# T30: 91% of weekday postings (715 of 783) land 13:00-01:00 UTC, US business
+# hours, so boards are refreshed 3x as often then and hourly overnight.
+PEAK_INTERVAL = timedelta(minutes=20)
 HARVEST_POLL = 60               # seconds between passes; each pass takes only stale boards
 PARK_FOR = timedelta(days=7)    # a board on no ATS we list is rechecked weekly
 SCOUT_INTERVAL = timedelta(hours=24)
 RETENTION_INTERVAL = 15 * 60    # independent of the potentially long harvest cycle
-JITTER = (1.0, 3.0)             # polite gap between vendor requests
+JITTER = (1.0, 3.0)             # polite gap between requests to ONE vendor
 MAX_BACKOFF = 300.0              # cap on an honoured Retry-After
+MAX_SLOWDOWN = 10.0              # a strained vendor's gap grows to at most 10x (30s)
 
 SEED_COMPANIES = {  # vendors verified live 2026-09-23 (figma is Greenhouse, plaid moved to Ashby)
     "ashby": ["vercel", "notion", "ramp", "plaid", "linear"],
@@ -359,7 +363,7 @@ def _commit_etag(provider: str, slug: str) -> None:
         _ETAGS.pop((provider, slug), None)
 
 
-async def _get_board(provider: str, slug: str) -> list | dict | object | None:
+async def _get_board(provider: str, slug: str, client=None) -> list | dict | object | None:
     """The single network path for every board. Returns parsed JSON, None when
     the board is gone (404), or NOT_MODIFIED (304). Raises RateLimited on 429/403
     and HTTPStatusError on anything else, so the caller can tell "this vendor is
@@ -373,32 +377,34 @@ async def _get_board(provider: str, slug: str) -> list | dict | object | None:
         url = adapter.list_url(slug)
     except (LookupError, AttributeError) as e:  # unknown ATS, or one with no board endpoint
         raise ValueError(f"cannot list a board for provider {provider!r}") from e
+    if client is None:  # a lane passes its own, reused connection (T30)
+        async with httpx.AsyncClient(timeout=BOARD_TIMEOUT) as own:
+            return await _get_board(provider, slug, own)
     headers = {"User-Agent": USER_AGENT}
     if (provider, slug) in _ETAGS:
         headers["If-None-Match"] = _ETAGS[(provider, slug)]
-    async with httpx.AsyncClient(timeout=BOARD_TIMEOUT) as client:
-        async with client.stream("GET", url, headers=headers) as resp:
-            if resp.status_code == 404:
-                return None
-            if resp.status_code == 304:  # before raise_for_status: httpx raises on 3xx
-                return NOT_MODIFIED
-            if resp.status_code in (403, 429):
-                raise RateLimited(_retry_after_seconds(resp))
-            resp.raise_for_status()
-            total, chunks = 0, []
-            async for chunk in resp.aiter_bytes():
-                total += len(chunk)
-                if total > BOARD_MAX_BYTES:
-                    raise ValueError(f"{provider}/{slug}: board exceeds {BOARD_MAX_BYTES} bytes")
-                chunks.append(chunk)
-            _UNCOMMITTED_ETAGS[(provider, slug)] = resp.headers.get("etag")
+    async with client.stream("GET", url, headers=headers) as resp:
+        if resp.status_code == 404:
+            return None
+        if resp.status_code == 304:  # before raise_for_status: httpx raises on 3xx
+            return NOT_MODIFIED
+        if resp.status_code in (403, 429):
+            raise RateLimited(_retry_after_seconds(resp))
+        resp.raise_for_status()
+        total, chunks = 0, []
+        async for chunk in resp.aiter_bytes():
+            total += len(chunk)
+            if total > BOARD_MAX_BYTES:
+                raise ValueError(f"{provider}/{slug}: board exceeds {BOARD_MAX_BYTES} bytes")
+            chunks.append(chunk)
+        _UNCOMMITTED_ETAGS[(provider, slug)] = resp.headers.get("etag")
     return json.loads(b"".join(chunks))
 
 
-async def fetch_ashby(slug: str) -> list[dict] | object | None:
+async def fetch_ashby(slug: str, client=None) -> list[dict] | object | None:
     """None means the board could not be observed (404); [] means it is empty;
     NOT_MODIFIED means it is unchanged since the last committed sync."""
-    data = await _get_board("ashby", slug)
+    data = await _get_board("ashby", slug, client)
     if data is None or data is NOT_MODIFIED:
         return data
     return [
@@ -422,8 +428,8 @@ def greenhouse_url(slug: str, job: dict) -> str | None:
     return f"https://job-boards.greenhouse.io/{slug}/jobs/{jid}"
 
 
-async def fetch_greenhouse(slug: str) -> list[dict] | object | None:
-    data = await _get_board("greenhouse", slug)
+async def fetch_greenhouse(slug: str, client=None) -> list[dict] | object | None:
+    data = await _get_board("greenhouse", slug, client)
     if data is None or data is NOT_MODIFIED:
         return data
     return [
@@ -439,8 +445,8 @@ async def fetch_greenhouse(slug: str) -> list[dict] | object | None:
     ]
 
 
-async def fetch_lever(slug: str) -> list[dict] | object | None:
-    data = await _get_board("lever", slug)
+async def fetch_lever(slug: str, client=None) -> list[dict] | object | None:
+    data = await _get_board("lever", slug, client)
     if data is None or data is NOT_MODIFIED:
         return data
     return [
@@ -462,17 +468,18 @@ class BoardVendorError(Exception):
 FETCHERS = {"ashby": fetch_ashby, "greenhouse": fetch_greenhouse, "lever": fetch_lever}
 
 
-async def _fetch(provider: str, slug: str):
+async def _fetch(provider: str, slug: str, client=None):
     fetch = FETCHERS.get(provider)
     if fetch is None:
         raise BoardVendorError(f"unknown provider {provider!r}")
     try:
-        return await fetch(slug)
+        return await fetch(slug, client)
     except (httpx.HTTPError, ValueError) as e:
-        raise BoardVendorError(f"{provider}/{slug}: {e}") from e
+        # the type too: an httpx timeout's message is often empty (T30: 6 blank log lines)
+        raise BoardVendorError(f"{provider}/{slug}: {type(e).__name__}: {e}") from e
 
 
-async def _find_moved_board(company: TrackedCompany) -> list[dict] | None:
+async def _find_moved_board(company: TrackedCompany, client=None) -> list[dict] | None:
     """Companies change ATS. T29 audit: 103 of 348 boards that 404'd were live on
     another vendor under the same slug (Notion, Sentry, Zapier...), and none on
     two. All three vendors 404 a slug they do not host, so a 200 is evidence.
@@ -483,7 +490,7 @@ async def _find_moved_board(company: TrackedCompany) -> list[dict] | None:
             continue
         _ETAGS.pop((provider, company.slug), None)  # a 304 here would carry no jobs
         try:
-            jobs = await _fetch(provider, company.slug)
+            jobs = await _fetch(provider, company.slug, client)
         except BoardVendorError:
             continue
         if jobs is not None:
@@ -493,14 +500,14 @@ async def _find_moved_board(company: TrackedCompany) -> list[dict] | None:
     return None
 
 
-async def sync_company_jobs(db, company: TrackedCompany) -> int | None:
+async def sync_company_jobs(db, company: TrackedCompany, client=None) -> int | None:
     """Refresh one company's postings and return how many were kept, or None
     when the board is unchanged since its last committed sync (304).
     Raise BoardVendorError/RateLimited for vendor failures; let code bugs propagate.
     """
-    raw_jobs = await _fetch(company.provider, company.slug)
+    raw_jobs = await _fetch(company.provider, company.slug, client)
     if raw_jobs is None:
-        raw_jobs = await _find_moved_board(company)
+        raw_jobs = await _find_moved_board(company, client)
 
     now = board_policy.utcnow()
     company.last_synced_at = now
@@ -563,57 +570,88 @@ async def sync_company_jobs(db, company: TrackedCompany) -> int | None:
     return len(active_urls)
 
 
-async def _harvest_cycle() -> dict:
-    """One pass over every stale company. Returns counters so the caller (and
-    tests) can see what actually happened instead of guessing from stdout."""
-    stats = {"companies": 0, "kept": 0, "unchanged": 0, "vendor_errors": 0, "bugs": 0,
-             "skipped_fresh": 0, "parked": 0}
+def harvest_interval(now: datetime) -> timedelta:
+    """How stale a board may get: tighter in US business hours (13:00-01:00 UTC)."""
+    return PEAK_INTERVAL if now.hour >= 13 or now.hour < 1 else HARVEST_INTERVAL
+
+
+def _strained(error: BoardVendorError) -> bool:
+    """The vendor itself is struggling (5xx, timeouts, dropped connections) - as
+    opposed to a 4xx, a malformed board or an unknown provider, which say nothing
+    about its load. A 429/403 is RateLimited and handled by the lane directly."""
+    cause = error.__cause__
+    return isinstance(cause, httpx.TransportError) or (
+        isinstance(cause, httpx.HTTPStatusError) and cause.response.status_code >= 500)
+
+
+async def _harvest_lane(provider: str, stats: dict) -> None:
+    """One vendor's stale boards, one at a time, with its own paced gap (T30).
+    Politeness is per host: the three lanes run side by side, so a pass takes
+    as long as the biggest vendor instead of all three end to end, while each
+    vendor still gets requests at least JITTER[0] apart. Like Googlebot, a lane
+    widens its gap when its vendor strains (429/5xx/timeouts) and narrows it
+    again on success; a back-off stalls only this vendor."""
+    slowdown = 1.0
     with _db.SessionLocal() as db:
-        seed_db_if_empty(db)
         # Stalest first, never-attempted (new or pasted) at the very front: in
         # insert order a new company waited behind ~1000 others, a full pass.
-        companies = db.execute(select(TrackedCompany).order_by(
-            TrackedCompany.last_synced_at.asc().nulls_first())).scalars().all()
+        companies = db.execute(select(TrackedCompany).where(TrackedCompany.provider == provider)
+                               .order_by(TrackedCompany.last_synced_at.asc().nulls_first())).scalars().all()
         now = board_policy.utcnow()
-        cutoff, park_cutoff = now - HARVEST_INTERVAL, now - PARK_FOR
+        cutoff, park_cutoff = now - harvest_interval(now), now - PARK_FOR
+        async with httpx.AsyncClient(timeout=BOARD_TIMEOUT) as client:
+            for company in companies:
+                # Skip anything attempted within the interval. This is also what
+                # stops a uvicorn restart from re-harvesting every board from scratch.
+                if company.last_synced_at is not None and company.last_synced_at > cutoff:
+                    stats["skipped_fresh"] += 1
+                    continue
+                if company.gone_at is not None and company.gone_at > park_cutoff:
+                    stats["parked"] += 1
+                    continue
+                stats["companies"] += 1
+                # Stamp the attempt before fetching and outside the rollback below:
+                # a failing board waits the interval like any other, instead of
+                # being retried on every HARVEST_POLL pass.
+                company.last_synced_at = board_policy.utcnow()
+                db.commit()
+                strained = False
+                try:
+                    kept = await sync_company_jobs(db, company, client)
+                    if kept is None:
+                        stats["unchanged"] += 1
+                    else:
+                        stats["kept"] += kept
+                except RateLimited as e:
+                    db.rollback()
+                    strained = True
+                    stats["rate_limited"] += 1
+                    wait = min(e.retry_after, MAX_BACKOFF)
+                    print(f"[board] {provider} asked us to back off {wait:.0f}s")
+                    await asyncio.sleep(wait)
+                except BoardVendorError as e:
+                    db.rollback()
+                    strained = _strained(e)
+                    stats["vendor_errors"] += 1
+                    print(f"[board] vendor problem: {e}")
+                except Exception:
+                    db.rollback()
+                    stats["bugs"] += 1
+                    if stats["bugs"] == 1:  # one traceback is a signal, 900 is noise
+                        traceback.print_exc()
+                slowdown = min(slowdown * 2, MAX_SLOWDOWN) if strained else max(slowdown / 2, 1.0)
+                await asyncio.sleep(random.uniform(*JITTER) * slowdown)
 
-        for company in companies:
-            # Skip anything attempted within the interval. This is also what stops
-            # a uvicorn restart from re-harvesting all ~1000 boards from scratch.
-            if company.last_synced_at is not None and company.last_synced_at > cutoff:
-                stats["skipped_fresh"] += 1
-                continue
-            if company.gone_at is not None and company.gone_at > park_cutoff:
-                stats["parked"] += 1
-                continue
-            stats["companies"] += 1
-            # Stamp the attempt before fetching and outside the rollback below:
-            # a failing board waits the interval like any other, instead of being
-            # retried on every HARVEST_POLL pass.
-            company.last_synced_at = board_policy.utcnow()
-            db.commit()
-            try:
-                kept = await sync_company_jobs(db, company)
-                if kept is None:
-                    stats["unchanged"] += 1
-                else:
-                    stats["kept"] += kept
-            except RateLimited as e:
-                db.rollback()
-                wait = min(e.retry_after, MAX_BACKOFF)
-                print(f"[board] {company.provider} asked us to back off {wait:.0f}s")
-                await asyncio.sleep(wait)
-            except BoardVendorError as e:
-                db.rollback()
-                stats["vendor_errors"] += 1
-                print(f"[board] vendor problem: {e}")
-            except Exception:
-                db.rollback()
-                stats["bugs"] += 1
-                if stats["bugs"] == 1:  # one traceback is a signal, 900 is noise
-                    traceback.print_exc()
-            await asyncio.sleep(random.uniform(*JITTER))
 
+async def _harvest_cycle() -> dict:
+    """One pass over every stale company, one lane per vendor. Returns counters so
+    the caller (and tests) can see what actually happened instead of guessing."""
+    stats = dict.fromkeys(("companies", "kept", "unchanged", "vendor_errors", "rate_limited",
+                           "bugs", "skipped_fresh", "parked"), 0)
+    with _db.SessionLocal() as db:
+        seed_db_if_empty(db)
+    await asyncio.gather(*(_harvest_lane(provider, stats) for provider in FETCHERS))
+    with _db.SessionLocal() as db:
         board_policy.prune_postings(db)
         db.commit()
 
@@ -628,8 +666,8 @@ async def _harvest_cycle() -> dict:
 
 async def harvester_loop():
     """A pass every HARVEST_POLL seconds takes only boards staler than
-    HARVEST_INTERVAL, so each board refreshes about hourly however long a full
-    pass takes, and a newly tracked (or pasted) company is picked up next pass."""
+    harvest_interval(), so each board refreshes on that cadence however long a
+    full pass takes, and a newly tracked (or pasted) company is picked up next pass."""
     while True:
         try:
             await _harvest_cycle()

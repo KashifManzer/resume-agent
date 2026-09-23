@@ -812,17 +812,12 @@ def test_one_failing_company_does_not_lose_another_companys_work(monkeypatch):
     """Each failure path rolls the session back. Prove that rollback does not
     discard a sibling company's committed postings."""
     _company("good"); _company("bad")
-    calls = {"n": 0}
     good_board = {"jobs": [{"id": 1, "title": "Software Engineer",
                             "location": {"name": "Austin, TX"},
                             "first_published": "2026-01-02T00:00:00-05:00"}]}
-
-    def client_factory(**kw):
-        calls["n"] += 1
-        maker = _fake_board(good_board) if calls["n"] == 1 else _fake_board({}, status=500)
-        return maker(**kw)
-
-    monkeypatch.setattr(board_sync.httpx, "AsyncClient", client_factory)
+    # Routed by URL: a lane reuses one client for all its boards (T30).
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _routed({
+        "/boards/good/": (good_board, 200, {}), "/boards/bad/": ({}, 500, {})}))
     monkeypatch.setattr(board_sync, "JITTER", (0, 0))
     stats = asyncio.run(board_sync._harvest_cycle())
     assert stats["kept"] == 1 and stats["vendor_errors"] == 1 and stats["bugs"] == 0
@@ -1250,3 +1245,149 @@ def test_new_and_stalest_companies_are_harvested_first(monkeypatch):
     monkeypatch.setattr(board_sync, "JITTER", (0, 0))
     asyncio.run(board_sync._harvest_cycle())
     assert [u.split("/")[-2] for u, _ in seen] == ["pasted", "older", "old"]
+
+
+# --- T30: one lane per vendor, peak-hours cadence, a brake per vendor --------
+
+def _companies_at(*rows):
+    """(slug, provider, minutes since last attempt) - older sorts first."""
+    now = board_policy.utcnow()
+    with _db.SessionLocal() as db:
+        for slug, provider, age in rows:
+            db.add(TrackedCompany(slug=slug, provider=provider,
+                                  last_synced_at=now - timedelta(minutes=age)))
+        db.commit()
+
+
+def _empty_everywhere(seen=None):
+    return _routed({GH: ({"jobs": []}, 200, {}), ASHBY: ({"jobs": []}, 200, {}),
+                    LEVER: ([], 200, {})}, seen)
+
+
+def _host(url):
+    return url.split("/")[2]
+
+
+def test_vendor_lanes_run_side_by_side(monkeypatch):
+    """Sequentially the three stalest (all Greenhouse) would go first."""
+    _companies_at(("g1", "greenhouse", 900), ("g2", "greenhouse", 890), ("g3", "greenhouse", 880),
+                  ("a1", "ashby", 200), ("l1", "lever", 100))
+    seen = []
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _empty_everywhere(seen))
+    monkeypatch.setattr(board_sync, "JITTER", (0, 0))
+    stats = asyncio.run(board_sync._harvest_cycle())
+    assert stats["companies"] == 5
+    assert {_host(u) for u, _ in seen[:3]} == {GH, ASHBY, LEVER}
+
+
+def test_a_throttled_vendor_does_not_hold_up_the_others(monkeypatch):
+    _companies_at(("g1", "greenhouse", 900), ("g2", "greenhouse", 890),
+                  ("a1", "ashby", 200), ("a2", "ashby", 190), ("l1", "lever", 100))
+    seen = []
+    throttled = {"first": True}
+    def greenhouse(headers):
+        if throttled.pop("first", False):
+            return ({}, 429, {"Retry-After": "120"})
+        return ({"jobs": []}, 200, {})
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _routed(
+        {GH: greenhouse, ASHBY: ({"jobs": []}, 200, {}), LEVER: ([], 200, {})}, seen))
+    monkeypatch.setattr(board_sync, "JITTER", (0, 0))
+    real_sleep = asyncio.sleep
+    async def sleep(seconds):  # the 120 s back-off takes a real, short while
+        await real_sleep(0.05 if seconds >= 1 else 0)
+    monkeypatch.setattr(board_sync.asyncio, "sleep", sleep)
+    stats = asyncio.run(board_sync._harvest_cycle())
+    urls = [u for u, _ in seen]
+    g2 = next(i for i, u in enumerate(urls) if "/boards/g2/" in u)
+    assert all(i < g2 for i, u in enumerate(urls) if GH not in u)  # others finished meanwhile
+    assert stats["rate_limited"] == 1 and stats["companies"] == 5
+
+
+def test_each_lane_reuses_one_connection(monkeypatch):
+    """One client per vendor per pass, even when a moved board is re-resolved."""
+    _companies_at(*[(f"g{i}", "greenhouse", 900 - i) for i in range(4)],
+                  ("a1", "ashby", 200), ("a2", "ashby", 190), ("l1", "lever", 100))
+    made = []
+    base = _routed({GH: ({"jobs": []}, 200, {}), ASHBY: ({"jobs": []}, 200, {}), LEVER: ([], 200, {}),
+                    "/boards/g3/": ({}, 404, {})})  # g3 404s -> looked up on Ashby/Lever
+    class Counting(base):
+        def __init__(self, **kw):
+            made.append(kw); super().__init__(**kw)
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", Counting)
+    monkeypatch.setattr(board_sync, "JITTER", (0, 0))
+    asyncio.run(board_sync._harvest_cycle())
+    assert len(made) == 3
+
+
+@pytest.mark.parametrize("hour, minute, interval", [
+    (12, 59, 60), (13, 0, 20), (19, 30, 20), (0, 59, 20), (1, 0, 60), (6, 0, 60)])
+def test_boards_refresh_every_20_minutes_in_us_business_hours(hour, minute, interval):
+    """91% of weekday postings land 13:00-01:00 UTC (T30 audit)."""
+    now = datetime(2026, 9, 23, hour, minute)
+    assert board_sync.harvest_interval(now) == timedelta(minutes=interval)
+
+
+@pytest.mark.parametrize("hour, refetched", [(12, False), (15, True)])
+def test_a_board_checked_30_minutes_ago_is_due_only_in_peak_hours(monkeypatch, hour, refetched):
+    at = datetime(2026, 1, 5, hour)
+    monkeypatch.setattr(board_policy, "utcnow", lambda: at)
+    _company("acme", last_synced=at - timedelta(minutes=30))
+    seen = []
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _empty_everywhere(seen))
+    monkeypatch.setattr(board_sync, "JITTER", (0, 0))
+    asyncio.run(board_sync._harvest_cycle())
+    assert bool(seen) is refetched
+
+
+def test_a_strained_vendor_is_slowed_then_recovers(monkeypatch):
+    """Like Googlebot: widen the gap on 5xx, narrow it again on success."""
+    _companies_at(*[(f"g{i}", "greenhouse", 900 - i) for i in range(6)])
+    failing = {"/boards/g0/", "/boards/g1/", "/boards/g2/"}
+    def greenhouse_for(slug_part):
+        return ({}, 503, {}) if slug_part in failing else ({"jobs": []}, 200, {})
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _routed(
+        {f"/boards/g{i}/": greenhouse_for(f"/boards/g{i}/") for i in range(6)}))
+    monkeypatch.setattr(board_sync, "JITTER", (1, 1))
+    gaps = []
+    async def sleep(seconds): gaps.append(seconds)
+    monkeypatch.setattr(board_sync.asyncio, "sleep", sleep)
+    asyncio.run(board_sync._harvest_cycle())
+    assert gaps == [2, 4, 8, 4, 2, 1]
+
+
+def test_the_brake_is_capped(monkeypatch):
+    _companies_at(*[(f"g{i}", "greenhouse", 900 - i) for i in range(6)])
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", _routed({GH: ({}, 503, {})}))
+    monkeypatch.setattr(board_sync, "JITTER", (3, 3))
+    gaps = []
+    async def sleep(seconds): gaps.append(seconds)
+    monkeypatch.setattr(board_sync.asyncio, "sleep", sleep)
+    asyncio.run(board_sync._harvest_cycle())
+    assert max(gaps) == 3 * board_sync.MAX_SLOWDOWN == 30
+
+
+def _vendor_error(cause):
+    try:
+        raise board_sync.BoardVendorError("x") from cause
+    except board_sync.BoardVendorError as e:
+        return e
+
+
+def test_only_a_struggling_vendor_counts_as_strain():
+    req = httpx.Request("GET", "https://x")
+    status = lambda code: httpx.HTTPStatusError("s", request=req, response=httpx.Response(code, request=req))
+    assert board_sync._strained(_vendor_error(httpx.ReadTimeout("slow", request=req)))
+    assert board_sync._strained(_vendor_error(httpx.ConnectError("down", request=req)))
+    assert board_sync._strained(_vendor_error(status(503)))
+    assert not board_sync._strained(_vendor_error(status(400)))            # our request, not their load
+    assert not board_sync._strained(_vendor_error(ValueError("bad JSON")))  # their data, not their load
+    assert not board_sync._strained(board_sync.BoardVendorError("unknown provider 'x'"))  # no cause
+
+
+def test_a_vendor_error_always_names_what_went_wrong(monkeypatch):
+    """httpx timeouts often carry an empty message; the log line said nothing."""
+    async def timeout(slug, client=None):
+        raise httpx.ReadTimeout("", request=httpx.Request("GET", "https://x"))
+    monkeypatch.setitem(board_sync.FETCHERS, "lever", timeout)
+    with pytest.raises(board_sync.BoardVendorError, match="lever/acme: ReadTimeout"):
+        asyncio.run(board_sync._fetch("lever", "acme"))
