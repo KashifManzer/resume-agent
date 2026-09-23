@@ -868,42 +868,72 @@ def test_discover_slugs_is_deduplicated_and_lowercased():
     assert board_sync.discover_slugs(text) == [("lever", "acme")]
 
 
-def test_scout_tracks_new_companies(monkeypatch):
+def _listings(*items, status=200):
+    """Stand in for the scout's client: GET returns SimplifyJobs listings.json."""
     class Resp:
-        status_code = 200
-        text = "boards.greenhouse.io/newco jobs.lever.co/otherco"
+        status_code = status
+        def json(self):
+            if isinstance(items[0] if items else None, Exception):
+                raise items[0]
+            return list(items) if not (items and items[0] == "NOT-A-LIST") else {"x": 1}
     class Client:
-        async def get(self, url, **kw): return Resp()
+        async def get(self, url, **kw):
+            assert url == board_sync.SIMPLIFY_LISTINGS
+            return Resp()
+    return Client()
+
+
+def test_scout_tracks_new_companies(monkeypatch):
+    client = _listings({"active": True, "url": "https://job-boards.greenhouse.io/newco/jobs/1"},
+                       {"active": True, "url": "https://jobs.lever.co/otherco/abc?lever-source=Simplify"})
     with _db.SessionLocal() as db:
-        added = asyncio.run(board_sync._scout_github(Client(), db))
+        added = asyncio.run(board_sync._scout_github(client, db))
         assert added == 2
         slugs = {c.slug: c for c in db.query(TrackedCompany).all()}
     assert slugs["newco"].provider == "greenhouse"
-    assert slugs["newco"].discovery_source == "github"
+    assert slugs["newco"].discovery_source == "simplify"
     assert slugs["otherco"].provider == "lever"
+
+
+def test_scout_counts_only_companies_that_are_new(monkeypatch):
+    """It used to print every sighting as if it were a discovery."""
+    client = _listings({"active": True, "url": "https://jobs.ashbyhq.com/acme/1"},
+                       {"active": True, "url": "https://jobs.ashbyhq.com/acme/2"})
+    with _db.SessionLocal() as db:
+        assert asyncio.run(board_sync._scout_github(client, db)) == 1
+        assert asyncio.run(board_sync._scout_github(client, db)) == 0
+
+
+def test_scout_ignores_closed_and_malformed_listings(monkeypatch):
+    client = _listings({"active": False, "url": "https://jobs.ashbyhq.com/closedco/1"},
+                       {"active": "yes", "url": "https://jobs.ashbyhq.com/truthyco/1"},
+                       {"active": True, "url": None}, {"active": True}, "a string", 7,
+                       {"active": True, "url": "https://boards.greenhouse.io/embed/job_app?token=1"},
+                       {"active": True, "url": "https://jobs.ashbyhq.com/embedding-vc/1"})
+    with _db.SessionLocal() as db:
+        assert asyncio.run(board_sync._scout_github(client, db)) == 1
+        assert [c.slug for c in db.query(TrackedCompany)] == ["embedding-vc"]
+
+
+@pytest.mark.parametrize("body", [ValueError("not json"), "NOT-A-LIST"])
+def test_a_broken_listings_file_is_vendor_noise_not_a_crash(monkeypatch, body, capsys):
+    with _db.SessionLocal() as db:
+        assert asyncio.run(board_sync._scout_github(_listings(body), db)) == 0
+    assert "[scout] listings.json" in capsys.readouterr().out
 
 
 def test_scout_does_not_flip_an_existing_companys_provider(monkeypatch):
     """Overwriting provider orphans the postings harvested under the old one."""
     _company("acme", provider="greenhouse")
-    class Resp:
-        status_code = 200
-        text = "jobs.lever.co/acme"
-    class Client:
-        async def get(self, url, **kw): return Resp()
     with _db.SessionLocal() as db:
-        asyncio.run(board_sync._scout_github(Client(), db))
+        asyncio.run(board_sync._scout_github(_listings({"active": True, "url": "https://jobs.lever.co/acme/1"}), db))
         assert db.get(TrackedCompany, "acme").provider == "greenhouse"
 
 
 def test_scout_skips_a_source_that_does_not_return_200(monkeypatch):
-    class Resp:
-        status_code = 404
-        text = "boards.greenhouse.io/shouldnotappear"
-    class Client:
-        async def get(self, url, **kw): return Resp()
+    client = _listings({"active": True, "url": "https://jobs.ashbyhq.com/shouldnotappear/1"}, status=404)
     with _db.SessionLocal() as db:
-        assert asyncio.run(board_sync._scout_github(Client(), db)) == 0
+        assert asyncio.run(board_sync._scout_github(client, db)) == 0
         assert db.query(TrackedCompany).count() == 0
 
 
@@ -1120,3 +1150,79 @@ def test_an_existing_db_file_gains_the_gone_at_column(tmp_path, monkeypatch):
     assert "gone_at" in {c["name"] for c in inspect(engine).get_columns("tracked_companies")}
     with _db.SessionLocal() as db:
         assert db.get(TrackedCompany, "acme").gone_at is None
+
+
+def test_discover_slugs_never_yields_the_greenhouse_embed_path():
+    text = "https://boards.greenhouse.io/embed/job_app?token=7669159003 jobs.ashbyhq.com/embedding-vc/x"
+    assert board_sync.discover_slugs(text) == [("ashby", "embedding-vc")]
+
+
+def test_serper_rotates_the_phrase_across_all_four_sites(monkeypatch, capsys):
+    monkeypatch.setenv("SERPER_API_KEY", "k")
+    asked = []
+    class Resp:
+        status_code = 200
+        def __init__(self, q): self.q = q
+        def json(self):
+            if "jobs.ashbyhq.com" in self.q:
+                return {"organic": [{"link": "https://jobs.ashbyhq.com/newco/1"},
+                                    {"link": "https://jobs.ashbyhq.com/newco/2"}]}
+            return {"organic": [{"link": "https://www.youtube.com/watch?v=x"}]}  # site: fell back
+    class Client:
+        async def post(self, url, json=None, **kw):
+            asked.append(json); return Resp(json["q"])
+    with _db.SessionLocal() as db:
+        assert asyncio.run(board_sync._scout_serper(Client(), db)) == 1
+    assert [q["q"].split('"')[0].strip() for q in asked] == [f"site:{s}" for s in board_sync.SERPER_SITES]
+    assert len({q["q"].split('"')[1] for q in asked}) == 1          # one phrase per day
+    assert all(set(q) == {"q"} for q in asked)                        # no page/tbs: both break site:
+    out = capsys.readouterr().out
+    assert "0 boards in 1 results" in out                              # a fallback is visible
+
+
+def test_every_serper_phrase_is_used_within_a_week():
+    import datetime as dt
+    days = [dt.date(2026, 9, 23) + dt.timedelta(d) for d in range(7)]
+    used = {board_sync.SERPER_PHRASES[d.toordinal() % len(board_sync.SERPER_PHRASES)] for d in days}
+    assert used == set(board_sync.SERPER_PHRASES)
+
+
+def test_the_scout_runs_daily_across_restarts(tmp_path, monkeypatch):
+    """A --reload restart used to rerun the whole scout, spending Serper credits."""
+    import os, time
+    monkeypatch.setattr(board_sync.config, "DATA_DIR", tmp_path)
+    assert board_sync._scout_due() is True                       # fresh install: run now
+    marker = tmp_path / "scout_last_run"
+    marker.touch()
+    assert board_sync._scout_due() is False                      # a restart an hour later
+    old = time.time() - board_sync.SCOUT_INTERVAL.total_seconds() - 1
+    os.utime(marker, (old, old))
+    assert board_sync._scout_due() is True                       # a day later
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_the_marker_is_touched_only_after_a_successful_scout(tmp_path, monkeypatch, fails):
+    monkeypatch.setattr(board_sync.config, "DATA_DIR", tmp_path)
+    async def github(client, db):
+        if fails:
+            raise RuntimeError("boom")
+        return 0
+    async def serper(client, db): return 0
+    async def stop(_): raise asyncio.CancelledError
+    monkeypatch.setattr(board_sync, "_scout_github", github)
+    monkeypatch.setattr(board_sync, "_scout_serper", serper)
+    monkeypatch.setattr(board_sync.asyncio, "sleep", stop)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(board_sync.scout_loop())
+    assert (tmp_path / "scout_last_run").exists() is (not fails)
+
+
+def test_a_scout_that_is_not_due_does_no_network_io(tmp_path, monkeypatch):
+    monkeypatch.setattr(board_sync.config, "DATA_DIR", tmp_path)
+    (tmp_path / "scout_last_run").touch()
+    def no_client(**kw): raise AssertionError("scout touched the network while not due")
+    async def stop(_): raise asyncio.CancelledError
+    monkeypatch.setattr(board_sync.httpx, "AsyncClient", no_client)
+    monkeypatch.setattr(board_sync.asyncio, "sleep", stop)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(board_sync.scout_loop())

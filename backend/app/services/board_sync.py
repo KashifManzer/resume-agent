@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import random
+import time
 import traceback
 import re
 import unicodedata
@@ -15,6 +16,7 @@ from sqlalchemy.dialects.sqlite import insert
 # Import the module, not the name: tests rebind db.SessionLocal to a temp
 # database, and `from app.db import SessionLocal` would capture the real one.
 from app import db as _db
+from app.core import config  # module, not names: tests rebind config.DATA_DIR
 from app.models import TrackedCompany, JobPosting
 from app.services import board_policy, jd_adapters
 
@@ -657,11 +659,23 @@ _DISCOVERY_PATTERNS = {
     "lever": re.compile(r"jobs\.lever\.co/([a-zA-Z0-9_.-]+)"),
 }
 
-GITHUB_SOURCES = [
-    # A curated list of 800+ SWE companies on Greenhouse/Lever. Verified live:
-    # returns 200 and is the source of ~700 of the tracked companies.
-    "https://raw.githubusercontent.com/sample-resume/awesome-easy-apply/main/README.md",
-]
+# SimplifyJobs' new-grad list: several commits a day (verified 2026-09-23), and
+# exactly our band. It replaced awesome-easy-apply, frozen since May 2024 and the
+# source of 317 of the 348 tracked boards that 404'd. Only `url` is read, from
+# listings still `active`, to discover board slugs; nothing is republished (the
+# repo declares no license).
+SIMPLIFY_LISTINGS = ("https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions"
+                     "/dev/.github/scripts/listings.json")
+
+# Serper: Google honours site: reliably only on page 1 (T29, 10 live queries:
+# page 2+ and the tbs time filter both fell back to YouTube/Reddit results), so
+# reach comes from rotating the phrase daily, not from paging. Page 1 of the
+# old fixed query found 0 untracked companies; a rotated phrase found 9.
+SERPER_SITES = ("boards.greenhouse.io", "job-boards.greenhouse.io", "jobs.ashbyhq.com", "jobs.lever.co")
+SERPER_PHRASES = ("software engineer", "backend engineer", "new grad software engineer",
+                  "machine learning engineer", "infrastructure engineer", "full stack engineer",
+                  "data engineer")
+SCOUT_CHECK = 3600  # seconds between "is the daily scout due?" checks
 
 
 def discover_slugs(text: str) -> list[tuple[str, str]]:
@@ -676,16 +690,18 @@ def discover_slugs(text: str) -> list[tuple[str, str]]:
         # lowercase BEFORE the set, or "Acme"/"acme"/"ACME" survive as three
         slugs = {m.lower() for m in pattern.findall(text)}
         found += [(provider, s) for s in sorted(slugs)
-                  if _SLUG_OK.fullmatch(s)]
+                  # "boards.greenhouse.io/embed/job_app?token=..." carries a job
+                  # id, not a board: "embed" 404s on every vendor (2026-09-23).
+                  if _SLUG_OK.fullmatch(s) and s != "embed"]
     return found
 
 
 def track_company(db, provider: str, slug: str, source: str) -> bool:
     """do_nothing, not do_update: the old version overwrote `provider` on every
     sighting, so a company listed under two ATSes flip-flopped and orphaned the
-    postings harvested under the other one. A genuine ATS migration is rare and
-    self-heals - the old board stops listing the jobs and GC removes them.
-    Returns True only when the company was new."""
+    postings harvested under the other one. A genuine ATS migration is handled
+    by the harvester instead: a board that 404s is looked up on the other ATSes
+    (T29 - 103 migrations had gone unnoticed). Returns True only when new."""
     if not _SLUG_OK.fullmatch(slug):
         raise ValueError(f"refusing suspicious board slug: {slug!r}")
     if source == "pasted":
@@ -705,15 +721,22 @@ def track_company(db, provider: str, slug: str, source: str) -> bool:
 
 
 async def _scout_github(client, db) -> int:
-    added = 0
-    for source_url in GITHUB_SOURCES:
-        resp = await client.get(source_url)
-        if resp.status_code != 200:
-            print(f"[scout] {source_url} returned {resp.status_code}")
-            continue
-        for provider, slug in discover_slugs(resp.text):
-            track_company(db, provider, slug, "github")
-            added += 1
+    """Companies with an active new-grad listing. Returns how many were new."""
+    resp = await client.get(SIMPLIFY_LISTINGS)
+    if resp.status_code != 200:
+        print(f"[scout] {SIMPLIFY_LISTINGS} returned {resp.status_code}")
+        return 0
+    try:
+        listings = resp.json()
+    except ValueError as e:  # a bad upstream file is their problem, not a bug of ours
+        print(f"[scout] listings.json is not JSON: {e}")
+        return 0
+    if not isinstance(listings, list):
+        print("[scout] listings.json is not a list")
+        return 0
+    urls = " ".join(str(item.get("url") or "") for item in listings
+                    if isinstance(item, dict) and item.get("active") is True)
+    added = sum(track_company(db, provider, slug, "simplify") for provider, slug in discover_slugs(urls))
     db.commit()
     return added
 
@@ -724,19 +747,21 @@ async def _scout_serper(client, db) -> int:
         print("[scout] no SERPER_API_KEY, skipping live discovery")
         return 0
     added = 0
-    for query in ('site:boards.greenhouse.io "software engineer"',
-                  'site:jobs.ashbyhq.com "software engineer"',
-                  'site:jobs.lever.co "software engineer"'):
+    phrase = SERPER_PHRASES[datetime.now(timezone.utc).toordinal() % len(SERPER_PHRASES)]
+    for site in SERPER_SITES:
+        query = f'site:{site} "{phrase}"'
         try:
             resp = await client.post("https://google.serper.dev/search",
                                      json={"q": query}, headers={"X-API-KEY": key}, timeout=10)
             if resp.status_code != 200:
                 print(f"[scout] serper returned {resp.status_code}")
                 continue
-            for item in resp.json().get("organic", []):
-                for provider, slug in discover_slugs(item.get("link", "")):
-                    track_company(db, provider, slug, "serper")
-                    added += 1
+            links = [str(item.get("link", "")) for item in resp.json().get("organic", [])]
+            found = discover_slugs(" ".join(links))
+            new = sum(track_company(db, provider, slug, "serper") for provider, slug in found)
+            added += new
+            # site: silently falling back to generic results shows up as 0 here
+            print(f"[scout] serper {query}: {len(found)} boards in {len(links)} results, {new} new")
             db.commit()
         except httpx.HTTPError as e:      # vendor problem, expected noise
             db.rollback()
@@ -744,17 +769,30 @@ async def _scout_serper(client, db) -> int:
     return added
 
 
+def _scout_due() -> bool:
+    """Daily, measured across restarts. Every --reload restart used to rerun the
+    scout: a 13.6MB download and Serper credits each time. The marker is touched
+    only after a successful run, so a failed one is retried within SCOUT_CHECK."""
+    marker = config.DATA_DIR / "scout_last_run"
+    try:
+        return time.time() - marker.stat().st_mtime >= SCOUT_INTERVAL.total_seconds()
+    except FileNotFoundError:
+        return True
+
+
 async def scout_loop():
     while True:
-        try:
-            async with httpx.AsyncClient(timeout=15.0, headers={"User-Agent": USER_AGENT}) as client:
-                with _db.SessionLocal() as db:
-                    added = await _scout_github(client, db)
-                    added += await _scout_serper(client, db)
-                    total = db.execute(select(func.count()).select_from(TrackedCompany)).scalar()
-                    print(f"[scout] cycle done: {added} slugs seen, tracking {total} companies")
-        except Exception:
-            # Same rule as the harvester: a bug in our own code must be loud, not
-            # a one-line warning indistinguishable from a network hiccup.
-            traceback.print_exc()
-        await asyncio.sleep(SCOUT_INTERVAL.total_seconds())
+        if _scout_due():
+            try:
+                async with httpx.AsyncClient(timeout=15.0, headers={"User-Agent": USER_AGENT}) as client:
+                    with _db.SessionLocal() as db:
+                        added = await _scout_github(client, db)
+                        added += await _scout_serper(client, db)
+                        total = db.execute(select(func.count()).select_from(TrackedCompany)).scalar()
+                        print(f"[scout] cycle done: {added} new companies, tracking {total}")
+                (config.DATA_DIR / "scout_last_run").touch()
+            except Exception:
+                # Same rule as the harvester: a bug in our own code must be loud,
+                # not a one-line warning indistinguishable from a network hiccup.
+                traceback.print_exc()
+        await asyncio.sleep(SCOUT_CHECK)
