@@ -868,14 +868,15 @@ def test_discover_slugs_is_deduplicated_and_lowercased():
     assert board_sync.discover_slugs(text) == [("lever", "acme")]
 
 
-def _listings(*items, status=200):
-    """Stand in for the scout's client: GET returns SimplifyJobs listings.json."""
+def _listings(body, status=200):
+    """Stand in for the scout's client: GET returns SimplifyJobs listings.json.
+    body is the parsed JSON, or an exception for .json() to raise."""
     class Resp:
         status_code = status
         def json(self):
-            if isinstance(items[0] if items else None, Exception):
-                raise items[0]
-            return list(items) if not (items and items[0] == "NOT-A-LIST") else {"x": 1}
+            if isinstance(body, Exception):
+                raise body
+            return body
     class Client:
         async def get(self, url, **kw):
             assert url == board_sync.SIMPLIFY_LISTINGS
@@ -884,8 +885,8 @@ def _listings(*items, status=200):
 
 
 def test_scout_tracks_new_companies(monkeypatch):
-    client = _listings({"active": True, "url": "https://job-boards.greenhouse.io/newco/jobs/1"},
-                       {"active": True, "url": "https://jobs.lever.co/otherco/abc?lever-source=Simplify"})
+    client = _listings([{"active": True, "url": "https://job-boards.greenhouse.io/newco/jobs/1"},
+                        {"active": True, "url": "https://jobs.lever.co/otherco/abc?lever-source=Simplify"}])
     with _db.SessionLocal() as db:
         added = asyncio.run(board_sync._scout_github(client, db))
         assert added == 2
@@ -897,25 +898,25 @@ def test_scout_tracks_new_companies(monkeypatch):
 
 def test_scout_counts_only_companies_that_are_new(monkeypatch):
     """It used to print every sighting as if it were a discovery."""
-    client = _listings({"active": True, "url": "https://jobs.ashbyhq.com/acme/1"},
-                       {"active": True, "url": "https://jobs.ashbyhq.com/acme/2"})
+    client = _listings([{"active": True, "url": "https://jobs.ashbyhq.com/acme/1"},
+                        {"active": True, "url": "https://jobs.ashbyhq.com/acme/2"}])
     with _db.SessionLocal() as db:
         assert asyncio.run(board_sync._scout_github(client, db)) == 1
         assert asyncio.run(board_sync._scout_github(client, db)) == 0
 
 
 def test_scout_ignores_closed_and_malformed_listings(monkeypatch):
-    client = _listings({"active": False, "url": "https://jobs.ashbyhq.com/closedco/1"},
-                       {"active": "yes", "url": "https://jobs.ashbyhq.com/truthyco/1"},
-                       {"active": True, "url": None}, {"active": True}, "a string", 7,
-                       {"active": True, "url": "https://boards.greenhouse.io/embed/job_app?token=1"},
-                       {"active": True, "url": "https://jobs.ashbyhq.com/embedding-vc/1"})
+    client = _listings([{"active": False, "url": "https://jobs.ashbyhq.com/closedco/1"},
+                        {"active": "yes", "url": "https://jobs.ashbyhq.com/truthyco/1"},
+                        {"active": True, "url": None}, {"active": True}, "a string", 7,
+                        {"active": True, "url": "https://boards.greenhouse.io/embed/job_app?token=1"},
+                        {"active": True, "url": "https://jobs.ashbyhq.com/embedding-vc/1"}])
     with _db.SessionLocal() as db:
         assert asyncio.run(board_sync._scout_github(client, db)) == 1
         assert [c.slug for c in db.query(TrackedCompany)] == ["embedding-vc"]
 
 
-@pytest.mark.parametrize("body", [ValueError("not json"), "NOT-A-LIST"])
+@pytest.mark.parametrize("body", [ValueError("not json"), {"not": "a list"}])
 def test_a_broken_listings_file_is_vendor_noise_not_a_crash(monkeypatch, body, capsys):
     with _db.SessionLocal() as db:
         assert asyncio.run(board_sync._scout_github(_listings(body), db)) == 0
@@ -926,12 +927,12 @@ def test_scout_does_not_flip_an_existing_companys_provider(monkeypatch):
     """Overwriting provider orphans the postings harvested under the old one."""
     _company("acme", provider="greenhouse")
     with _db.SessionLocal() as db:
-        asyncio.run(board_sync._scout_github(_listings({"active": True, "url": "https://jobs.lever.co/acme/1"}), db))
+        asyncio.run(board_sync._scout_github(_listings([{"active": True, "url": "https://jobs.lever.co/acme/1"}]), db))
         assert db.get(TrackedCompany, "acme").provider == "greenhouse"
 
 
 def test_scout_skips_a_source_that_does_not_return_200(monkeypatch):
-    client = _listings({"active": True, "url": "https://jobs.ashbyhq.com/shouldnotappear/1"}, status=404)
+    client = _listings([{"active": True, "url": "https://jobs.ashbyhq.com/shouldnotappear/1"}], status=404)
     with _db.SessionLocal() as db:
         assert asyncio.run(board_sync._scout_github(client, db)) == 0
         assert db.query(TrackedCompany).count() == 0
@@ -1054,19 +1055,29 @@ def test_a_stale_etag_on_the_other_ats_cannot_hide_a_moved_board(monkeypatch):
     assert kept == 1 and company.provider == "ashby"
 
 
+def _not_modified_since(etag):
+    return lambda h: ({}, 304, {}) if h.get("If-None-Match") == etag else ({"jobs": []}, 200, {})
+
+
 def test_an_unchanged_board_is_not_reprocessed(monkeypatch):
     _company("acme", provider="greenhouse")
     seen = []
     etagged = _routed({GH: ({"jobs": [_GH_JOB]}, 200, {"ETag": 'W/"v1"'})}, seen)
     assert _sync_acme(monkeypatch, etagged)[0] == 1
-    first_update = _sync_acme(monkeypatch, _routed({}))[2]  # sanity: rows exist
-    not_modified = lambda h: ({}, 304, {}) if h.get("If-None-Match") == 'W/"v1"' else ({"jobs": []}, 200, {})
-    kept, company, rows = _sync_acme(monkeypatch, _routed({GH: not_modified}, seen))
+    kept, company, rows = _sync_acme(monkeypatch, _routed({GH: _not_modified_since('W/"v1"')}, seen))
     assert kept is None                                    # "unchanged", not "0 kept"
     assert seen[-1][1]["If-None-Match"] == 'W/"v1"'
     assert [r.status for r in rows.values()] == ["open"]   # an empty 200 would have closed it
-    assert company.gone_at is None and company.last_synced_at is not None
-    assert first_update
+    assert company.last_synced_at is not None
+
+
+def test_a_parked_board_that_answers_304_on_recheck_is_unparked(monkeypatch):
+    """Its ETag survives the park, so an unchanged board comes back as a 304."""
+    _company("acme", provider="greenhouse")
+    _sync_acme(monkeypatch, _routed({GH: ({"jobs": [_GH_JOB]}, 200, {"ETag": '"v1"'})}))
+    assert _sync_acme(monkeypatch, _routed({}))[1].gone_at is not None   # 404 everywhere: parked
+    kept, company, _ = _sync_acme(monkeypatch, _routed({GH: _not_modified_since('"v1"')}))
+    assert kept is None and company.gone_at is None
 
 
 def test_an_etag_is_trusted_only_after_its_rows_commit(monkeypatch):

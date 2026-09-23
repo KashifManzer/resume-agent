@@ -28,9 +28,10 @@ USER_AGENT = "Mozilla/5.0 (compatible; resume-agent/1.0; +job-board)"
 BOARD_TIMEOUT = 10.0          # unchanged: worst real board (lever/palantir, 6MB) takes ~1.8s
 BOARD_MAX_BYTES = 64 * 1024 * 1024   # largest real board is Ashby/bjakcareer at 33.6MB (2026-09-23)
 
-# Slugs come from untrusted sources (a GitHub README, Serper results) and are
-# interpolated into a vendor URL path. The host is always a literal, so this is
-# not an SSRF vector, but a traversal-shaped slug has no business being fetched.
+# Slugs come from untrusted sources (SimplifyJobs listings, Serper results,
+# pasted links) and are interpolated into a vendor URL path. The host is always a
+# literal, so this is not an SSRF vector, but a traversal-shaped slug has no
+# business being fetched.
 _SLUG_OK = re.compile(r"(?!.*\.\.)[A-Za-z0-9_.-]+")  # fullmatch; no ".." anywhere
 
 HARVEST_INTERVAL = timedelta(hours=1)   # per company: how stale a board may get
@@ -41,9 +42,9 @@ RETENTION_INTERVAL = 15 * 60    # independent of the potentially long harvest cy
 JITTER = (1.0, 3.0)             # polite gap between vendor requests
 MAX_BACKOFF = 300.0              # cap on an honoured Retry-After
 
-SEED_COMPANIES = {
-    "ashby": ["vercel", "notion", "ramp", "figma", "linear"],
-    "greenhouse": ["airbnb", "stripe", "plaid", "discord", "anthropic"]
+SEED_COMPANIES = {  # vendors verified live 2026-09-23 (figma is Greenhouse, plaid moved to Ashby)
+    "ashby": ["vercel", "notion", "ramp", "plaid", "linear"],
+    "greenhouse": ["airbnb", "stripe", "figma", "discord", "anthropic"]
 }
 
 # A title names the ROLE first and the TEAM second: "Software Engineer, Sales
@@ -108,7 +109,7 @@ _SOFTWARE_FIELD = re.compile(
     r"|ai|llm|agent\w*|infra\w*|platform|devops|site reliability|sre|cloud|security|devsecops"
     r"|forward deployed|founding|research|applied|distributed|kernel|operating systems"
     r"|compiler|database|firmware|embedded|hpc|perception|robotics software|simulation"
-    r"|growth|product engineer|red team|threat|vulnerability|grc|abuse|detection"
+    r"|growth|red team|threat|vulnerability|grc|abuse|detection"
     r"|incident response|identity|iam|build|performance|integration|design engineer)\b", re.I)
 # Weaker hints, trusted only when no hardware word appears in the whole title.
 # "systems" stays ambiguous-but-kept: Cloudflare's SWEs are "Systems Engineers".
