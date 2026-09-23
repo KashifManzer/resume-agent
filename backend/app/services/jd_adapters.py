@@ -7,6 +7,7 @@ The network GET (SSRF-guarded) lives in jd_fetch, so adapters stay pure + testab
 
 import html
 import re
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
 from app.schemas.jd import JdSource
@@ -36,6 +37,21 @@ def _strip_html(s: str) -> str:
     s = re.sub(r"<[^>]+>", "", s)
     s = html.unescape(s)
     return "\n".join(ln.strip() for ln in s.splitlines() if ln.strip()).strip()
+
+
+def parse_ats_date(value) -> datetime | None:
+    """ATS date -> naive UTC, or None when missing/unparseable. Handles ISO strings
+    (with or without offset, or date-only as Workday sends) and Lever's epoch ms."""
+    if not value:
+        return None
+    try:
+        if str(value).isdigit():
+            return datetime.fromtimestamp(int(value) / 1000, tz=timezone.utc).replace(tzinfo=None)
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        # Naive is assumed to be UTC already; aware is converted and stripped.
+        return dt if dt.tzinfo is None else dt.astimezone(timezone.utc).replace(tzinfo=None)
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def object_field(data: dict, key: str) -> dict:
@@ -69,6 +85,9 @@ class Workday:
             source_url=url,
             apply_url=url,  # Workday's posting URL is itself the apply page
             adapter=self.name,
+            # A bare calendar date (verified: "Posted Today" -> today's date). Kept
+            # as a date, not UTC midnight, which reads as "yesterday" west of UTC.
+            posted_at=(d := parse_ats_date(info.get("startDate"))) and d.date(),
         )
 
 
@@ -80,10 +99,16 @@ class Greenhouse:
 
     def api_url(self, url: str) -> str:
         p = urlparse(url)
-        token = p.path.strip("/").split("/")[0]
         m = re.search(r"/jobs/(\d+)", p.path)
         jid = m.group(1) if m else parse_qs(p.query).get("gh_jid", [""])[0]
-        return f"https://boards-api.greenhouse.io/v1/boards/{token}/jobs/{jid}"
+        return f"https://boards-api.greenhouse.io/v1/boards/{self._token(url)}/jobs/{jid}"
+
+    def _token(self, url: str) -> str:
+        return urlparse(url).path.strip("/").split("/")[0]
+
+    def board_slug(self, url: str) -> str:
+        """The slug list_url takes. Lowercase, like every tracked company (T28)."""
+        return self._token(url).lower()
 
     def list_url(self, slug: str) -> str:
         """Every posting on a board (T26). Same API family as api_url - kept here
@@ -102,6 +127,10 @@ class Greenhouse:
             source_url=url,
             apply_url=data.get("absolute_url"),
             adapter=self.name,
+            posted_at=parse_ats_date(data.get("first_published")),
+            # Greenhouse bulk-rewrites this on board-wide edits (T26), so it is
+            # "last touched", not proof the posting itself changed.
+            updated_at=parse_ats_date(data.get("updated_at")),
         )
 
 
@@ -114,6 +143,12 @@ class Lever:
     def api_url(self, url: str) -> str:
         company, jid = urlparse(url).path.strip("/").split("/")[:2]
         return f"https://api.lever.co/v0/postings/{company}/{jid}"
+
+    def board_slug(self, url: str) -> str:
+        # ponytail: lowercased like the scout; Lever slugs ARE case-sensitive
+        # (Palantir 404s), but 0 of 51 stored and 0 of 1219 sampled live Lever
+        # URLs used uppercase (2026-09-22). Keep the URL's case if one ever does.
+        return urlparse(url).path.strip("/").split("/")[0].lower()
 
     def list_url(self, slug: str) -> str:
         return f"https://api.lever.co/v0/postings/{slug}?mode=json"
@@ -139,6 +174,7 @@ class Lever:
             source_url=url,
             apply_url=data.get("hostedUrl"),
             adapter=self.name,
+            posted_at=parse_ats_date(data.get("createdAt")),  # Lever exposes no update time
         )
 
 
@@ -158,6 +194,9 @@ class Ashby:
     def api_url(self, url: str) -> str:
         org, _ = self._org_jid(url)
         return self.list_url(org)
+
+    def board_slug(self, url: str) -> str:
+        return self._org_jid(url)[0].lower()
 
     def list_url(self, slug: str) -> str:
         """Ashby has no per-job endpoint - api_url fetches the whole board and
@@ -182,6 +221,7 @@ class Ashby:
             source_url=url,
             apply_url=job.get("applyUrl") or job.get("jobUrl"),
             adapter=self.name,
+            posted_at=parse_ats_date(job.get("publishedAt")),  # Ashby exposes no update time
         )
 
 

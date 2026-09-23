@@ -277,3 +277,157 @@ def test_route_blocked_url_is_4xx(monkeypatch):
     monkeypatch.setattr(jd_fetch, "fetch_jd_from_url", boom)
     r = TestClient(app).post("/jd/from-url", json={"url": "http://169.254.169.254/"})
     assert r.status_code == 400
+
+
+# --- T28: posting freshness + pasted-link company tracking -----------------
+
+from datetime import date, datetime
+
+from sqlalchemy import select
+
+from app import db as _db
+from app.models import TrackedCompany
+from app.schemas.jd import JdSource
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("2026-09-14T13:36:20-04:00", datetime(2026, 9, 14, 17, 36, 20)),   # Greenhouse, offset -> UTC
+    ("2026-09-11T19:18:21.372+00:00", datetime(2026, 9, 11, 19, 18, 21, 372000)),  # Ashby
+    ("2026-09-11T19:18:21Z", datetime(2026, 9, 11, 19, 18, 21)),         # Z suffix
+    (1789694961378, datetime(2026, 9, 18, 1, 29, 21, 378000)),          # Lever epoch ms (int)
+    ("1789694961378", datetime(2026, 9, 18, 1, 29, 21, 378000)),        # ...and as text
+    ("2026-09-22", datetime(2026, 9, 22)),                               # Workday, date only
+    ("2026-09-22T10:00:00", datetime(2026, 9, 22, 10)),                  # naive = already UTC
+])
+def test_parse_ats_date_normalises_every_ats_format_to_naive_utc(raw, expected):
+    assert A.parse_ats_date(raw) == expected
+
+
+@pytest.mark.parametrize("raw", [None, "", 0, "not-a-date", "Posted Today", "-5", "1.5e12",
+                                 "9" * 30, True, "2026-13-45"])
+def test_parse_ats_date_never_raises_on_junk(raw):
+    assert A.parse_ats_date(raw) is None
+
+
+def test_adapters_carry_live_date_fields():
+    # Field names and values from the live APIs (2026-09-22): figma/6143238004,
+    # binance/60ee32bb..., ramp/b3b0875d..., and an nvidia job shown "Posted Today".
+    gh = A.by_name("greenhouse").parse(
+        {"content": "x", "first_published": "2026-09-14T13:36:20-04:00", "updated_at": "2026-09-17T19:16:13-04:00"},
+        "https://job-boards.greenhouse.io/figma/jobs/6143238004")
+    assert (gh.posted_at, gh.updated_at) == (datetime(2026, 9, 14, 17, 36, 20), datetime(2026, 9, 17, 23, 16, 13))
+
+    lv = A.by_name("lever").parse({"descriptionPlain": "x", "createdAt": 1789694961378},
+                                  "https://jobs.lever.co/binance/60ee32bb")
+    assert (lv.posted_at, lv.updated_at) == (datetime(2026, 9, 18, 1, 29, 21, 378000), None)
+
+    ash = A.by_name("ashby").parse(
+        {"jobs": [{"id": "b3b0875d", "descriptionPlain": "x", "publishedAt": "2026-09-11T19:18:21.372+00:00"}]},
+        "https://jobs.ashbyhq.com/ramp/b3b0875d")
+    assert (ash.posted_at, ash.updated_at) == (datetime(2026, 9, 11, 19, 18, 21, 372000), None)
+
+    wd = A.by_name("workday").parse({"jobPostingInfo": {"jobDescription": "x", "startDate": "2026-09-22"}},
+                                    "https://nvidia.wd5.myworkdayjobs.com/x/job/y")
+    assert (wd.posted_at, wd.updated_at) == (date(2026, 9, 22), None)
+    assert type(wd.posted_at) is date  # a calendar day, not UTC midnight
+    assert wd.model_dump(mode="json")["posted_at"] == "2026-09-22"
+
+
+def test_missing_or_junk_dates_do_not_break_the_fetch():
+    # The saved fixtures carry no date fields at all.
+    src = A.by_name("greenhouse").parse(json.loads(_fixture("greenhouse.json")),
+                                        "https://job-boards.greenhouse.io/acme/jobs/456")
+    assert (src.posted_at, src.updated_at) == (None, None) and src.text
+    junk = A.by_name("greenhouse").parse({"content": "x", "first_published": "soon", "updated_at": 42.5},
+                                         "https://job-boards.greenhouse.io/acme/jobs/456")
+    assert (junk.posted_at, junk.updated_at) == (None, None)
+
+
+@pytest.mark.parametrize("name, url, slug", [
+    ("greenhouse", "https://job-boards.greenhouse.io/figma/jobs/6143238004", "figma"),
+    ("greenhouse", "https://boards.greenhouse.io/Figma/jobs/6143238004?gh_jid=6143238004", "figma"),
+    ("greenhouse", "https://boards.greenhouse.io/figma?gh_jid=6143238004", "figma"),
+    ("lever", "https://jobs.lever.co/binance/60ee32bb-4dfb-4055-98a1-ec3be5479359/apply", "binance"),
+    ("ashby", "https://jobs.ashbyhq.com/ramp/b3b0875d-cbf2-41ed-bda3-2714c82c4b57/application", "ramp"),
+])
+def test_board_slug_is_what_the_harvester_lists(name, url, slug):
+    adapter = A.by_name(name)
+    assert adapter.match(url)
+    assert adapter.board_slug(url) == slug
+
+
+def _paste(monkeypatch, source: JdSource):
+    monkeypatch.setattr(jd_fetch, "fetch_jd_from_url", lambda url: source)
+    return TestClient(app).post("/jd/from-url", json={"url": source.source_url})
+
+
+def _companies():
+    with _db.SessionLocal() as db:
+        return {c.slug: (c.provider, c.discovery_source) for c in db.execute(select(TrackedCompany)).scalars()}
+
+
+def test_pasted_link_adds_its_company_once(monkeypatch):
+    src = JdSource(text="x", source_url="https://job-boards.greenhouse.io/Newco/jobs/1", adapter="greenhouse",
+                   posted_at=datetime(2026, 9, 14, 17, 36, 20))
+    first = _paste(monkeypatch, src)
+    assert first.status_code == 200
+    assert first.json()["board"] == "added"
+    assert first.json()["posted_at"] == "2026-09-14T17:36:20"  # naive UTC, like the Board feed
+    assert type(JdSource.model_validate(first.json()).posted_at) is datetime  # a timestamp stays one
+    assert _companies() == {"newco": ("greenhouse", "pasted")}
+
+    again = _paste(monkeypatch, src)
+    assert again.json()["board"] == "tracked"
+    assert _companies() == {"newco": ("greenhouse", "pasted")}
+
+
+def test_existing_company_is_left_untouched(monkeypatch):
+    with _db.SessionLocal() as db:
+        db.add(TrackedCompany(slug="acme", provider="lever", discovery_source="github"))
+        db.commit()
+    r = _paste(monkeypatch, JdSource(text="x", source_url="https://jobs.ashbyhq.com/acme/1", adapter="ashby"))
+    assert r.json()["board"] == "tracked"
+    assert _companies() == {"acme": ("lever", "github")}  # provider not flipped (the T26 scout rule)
+
+
+@pytest.mark.parametrize("adapter, url", [
+    ("generic", "https://careers.example.com/jobs/1"),      # includes an ATS whose API failed over to generic
+    ("workday", "https://nvidia.wd5.myworkdayjobs.com/x/job/y"),
+])
+def test_untrackable_sources_add_nothing(monkeypatch, adapter, url):
+    r = _paste(monkeypatch, JdSource(text="x", source_url=url, adapter=adapter))
+    assert r.status_code == 200 and r.json()["board"] is None
+    assert _companies() == {}
+
+
+def test_suspicious_slug_still_returns_the_jd_but_is_not_tracked(monkeypatch):
+    r = _paste(monkeypatch, JdSource(text="the jd", source_url="https://job-boards.greenhouse.io/a..b/jobs/1",
+                                     adapter="greenhouse"))
+    assert r.status_code == 200 and r.json()["text"] == "the jd" and r.json()["board"] is None
+    assert _companies() == {}
+
+
+def test_failed_fetch_tracks_nothing(monkeypatch):
+    def boom(url):
+        raise jd_fetch.JdFetchError("fetch failed: HTTP 500")
+    monkeypatch.setattr(jd_fetch, "fetch_jd_from_url", boom)
+    r = TestClient(app).post("/jd/from-url", json={"url": "https://job-boards.greenhouse.io/newco/jobs/1"})
+    assert r.status_code == 400 and _companies() == {}
+
+
+def test_generic_warns_when_llm_cleanup_finds_no_job(monkeypatch):
+    # Live nuro.ai/careersitem?gh_jid=7793005 (2026-09-22): 925 chars of nav
+    # chrome passed the length gate, the LLM answered with this 46-char line,
+    # and it was handed back as the JD with no warning.
+    monkeypatch.setattr(jd_fetch, "_guarded_get", lambda url, **kw: _fixture("generic_job.html").encode())
+    monkeypatch.setattr(jd_fetch.config, "OLLAMA_API_KEY", "set")
+    monkeypatch.setattr(jd_fetch, "_llm_cleanup", lambda text: "No job description found in the provided text.")
+    src = jd_fetch.fetch_jd_from_url("https://nuro.ai/careersitem?gh_jid=7793005")
+    assert src.adapter == "generic" and src.warnings
+
+
+def test_generic_llm_cleanup_of_a_real_jd_does_not_warn(monkeypatch):
+    monkeypatch.setattr(jd_fetch, "_guarded_get", lambda url, **kw: _fixture("generic_job.html").encode())
+    monkeypatch.setattr(jd_fetch.config, "OLLAMA_API_KEY", "set")
+    monkeypatch.setattr(jd_fetch, "_llm_cleanup", lambda text: text)
+    assert jd_fetch.fetch_jd_from_url("https://careers.example.com/jobs/1").warnings == []

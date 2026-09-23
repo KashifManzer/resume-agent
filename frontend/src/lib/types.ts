@@ -77,6 +77,9 @@ export interface JdSource {
   apply_url: string | null // T16: the ATS apply form (null for pasted/generic JDs)
   adapter: string
   warnings: string[]
+  posted_at: string | null // T28: naive UTC, or a bare YYYY-MM-DD (Workday); null when no date
+  updated_at: string | null // only Greenhouse exposes one
+  board: 'added' | 'tracked' | null // T28: a pasted ATS link's company joined the Board
 }
 
 // Answer bank (T13). Seeded canonical-core rows carry `canonical` (question

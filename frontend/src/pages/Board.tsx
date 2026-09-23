@@ -12,13 +12,7 @@ import { Button } from "@/components/ui/button";
 import { getBoardFeed } from "@/lib/api";
 import { rise, stagger, useEntrance } from "@/lib/motion";
 import type { JobPostingOut } from "@/lib/types";
-
-const MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
-
-function postingTime(iso: string): number {
-  // SQLite sends naive UTC; also accept an explicit offset without appending Z.
-  return Date.parse(/(?:Z|[+-]\d{2}:\d{2})$/i.test(iso) ? iso : `${iso}Z`);
-}
+import { MAX_AGE_MS, postingTime } from "@/lib/utils";
 
 function formatDate(iso: string): string {
   return new Date(postingTime(iso)).toLocaleString("en-US", {

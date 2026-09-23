@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { motion } from 'motion/react'
 
@@ -13,6 +13,8 @@ import { ApiError } from '@/lib/api'
 import { useResumes } from '@/hooks/useProfile'
 import { markTailored } from '@/hooks/useSetup'
 import { rise, stagger, useEntrance } from '@/lib/motion'
+import type { JdSource } from '@/lib/types'
+import { MAX_AGE_MS, cn, postingTime } from '@/lib/utils'
 
 function Eyebrow({ n, children }: { n: string; children: React.ReactNode }) {
   return (
@@ -20,6 +22,55 @@ function Eyebrow({ n, children }: { n: string; children: React.ReactNode }) {
       <span className="text-marigold">{n}</span>
       <span className="text-cream-soft">{children}</span>
     </div>
+  )
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+const ago = new Intl.RelativeTimeFormat('en', { numeric: 'auto' })
+const dayFmt = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+
+// A bare "YYYY-MM-DD" (Workday) is a calendar day, so read it as a LOCAL day;
+// as UTC midnight it would show as the previous day across the Americas.
+function postedDate(iso: string): Date {
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
+  return day ? new Date(+day[1], +day[2] - 1, +day[3]) : new Date(postingTime(iso))
+}
+
+// Calendar days between two local dates; rounding absorbs a DST 23/25h day.
+const daysBetween = (a: Date, b: Date) =>
+  Math.round((new Date(b).setHours(0, 0, 0, 0) - new Date(a).setHours(0, 0, 0, 0)) / DAY_MS)
+
+/** T28: how fresh the fetched posting is, and whether its company joined the Board. */
+function Freshness({ source }: { source: JdSource }) {
+  const [now] = useState(() => new Date()) // as of this fetch; remounted per link
+  const posted = source.posted_at ? postedDate(source.posted_at) : null
+  const updated = source.updated_at ? dayFmt.format(postedDate(source.updated_at)) : null
+  const board = { added: 'company added to Board', tracked: 'company already on Board' }
+  // each phrase is one unit, so a narrow screen breaks between them, never inside
+  const parts = [
+    posted === null ? (
+      'posting date not provided by this site'
+    ) : (
+      <>
+        posted {dayFmt.format(posted)}{' '}
+        <span className={cn(now.getTime() - posted.getTime() > MAX_AGE_MS && 'text-gap-hi')}>
+          ({ago.format(-daysBetween(posted, now), 'day')})
+        </span>
+      </>
+    ),
+    // same-day "updated" is just the posting itself; say it only when it adds news
+    updated && updated !== (posted && dayFmt.format(posted)) && `updated ${updated}`,
+    source.board && board[source.board],
+  ].filter(Boolean)
+  return (
+    <p className="font-mono text-xs text-cream-soft">
+      {parts.map((part, i) => (
+        <Fragment key={i}>
+          {i > 0 && ' · '}
+          <span className="whitespace-nowrap">{part}</span>
+        </Fragment>
+      ))}
+    </p>
   )
 }
 
@@ -171,6 +222,7 @@ export function Compose() {
                 {source.title ? ` · ${source.title}` : ''} — review &amp; edit below before running.
               </p>
             )}
+            {source && <Freshness key={source.source_url} source={source} />}
             {source?.warnings?.map((w) => (
               <p key={w} className="font-mono text-xs text-gap-hi">
                 ⚠ {w}

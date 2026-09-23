@@ -501,7 +501,7 @@ def test_we_identify_ourselves_honestly():
 
 
 def test_traversal_shaped_slugs_are_refused():
-    for slug in ("../evil", "a/b", "foo bar", "", "..", "a\\\\b"):
+    for slug in ("../evil", "a/b", "foo bar", "", "..", "a\\\\b", "x..", "figma\n"):  # $ alone admits a trailing newline
         with pytest.raises(ValueError):
             asyncio.run(board_sync._get_board("greenhouse", slug))
 

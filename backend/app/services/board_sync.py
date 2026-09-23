@@ -29,7 +29,7 @@ BOARD_MAX_BYTES = 32 * 1024 * 1024   # largest real board is Ashby/openai at ~13
 # Slugs come from untrusted sources (a GitHub README, Serper results) and are
 # interpolated into a vendor URL path. The host is always a literal, so this is
 # not an SSRF vector, but a traversal-shaped slug has no business being fetched.
-_SLUG_OK = re.compile(r"^[A-Za-z0-9_.-]+$")
+_SLUG_OK = re.compile(r"(?!.*\.\.)[A-Za-z0-9_.-]+")  # fullmatch; no ".." anywhere
 
 HARVEST_INTERVAL = timedelta(hours=1)
 SCOUT_INTERVAL = timedelta(hours=24)
@@ -230,21 +230,7 @@ UNDATED = datetime(1970, 1, 1)
 
 
 def parse_ats_date(date_str: str | None) -> datetime:
-    if not date_str:
-        return UNDATED
-    try:
-        if str(date_str).isdigit():
-            # Lever returns Unix epoch in milliseconds
-            return datetime.fromtimestamp(int(date_str) / 1000, tz=timezone.utc).replace(tzinfo=None)
-
-        date_str = str(date_str).replace("Z", "+00:00")
-        dt = datetime.fromisoformat(date_str)
-        # If naive, assume it's already UTC. If aware, convert to UTC and strip.
-        if dt.tzinfo is None:
-            return dt
-        return dt.astimezone(timezone.utc).replace(tzinfo=None)
-    except Exception:
-        return UNDATED
+    return jd_adapters.parse_ats_date(date_str) or UNDATED
 
 
 def seed_db_if_empty(db):
@@ -292,7 +278,7 @@ async def _get_board(provider: str, slug: str) -> list | dict | None:
     anything else, so the caller can tell "this vendor is unhappy" from "our code
     is broken". Endpoint URLs come from jd_adapters so they live in one module.
     """
-    if not _SLUG_OK.match(slug) or ".." in slug:
+    if not _SLUG_OK.fullmatch(slug):
         raise ValueError(f"refusing suspicious board slug: {slug!r}")
     try:
         adapter = jd_adapters.by_name(provider)
@@ -547,20 +533,23 @@ def discover_slugs(text: str) -> list[tuple[str, str]]:
         # lowercase BEFORE the set, or "Acme"/"acme"/"ACME" survive as three
         slugs = {m.lower() for m in pattern.findall(text)}
         found += [(provider, s) for s in sorted(slugs)
-                  if _SLUG_OK.match(s) and ".." not in s]
+                  if _SLUG_OK.fullmatch(s)]
     return found
 
 
-def _track(db, provider: str, slug: str, source: str) -> None:
+def track_company(db, provider: str, slug: str, source: str) -> bool:
     """do_nothing, not do_update: the old version overwrote `provider` on every
     sighting, so a company listed under two ATSes flip-flopped and orphaned the
     postings harvested under the other one. A genuine ATS migration is rare and
-    self-heals - the old board stops listing the jobs and GC removes them."""
-    db.execute(
+    self-heals - the old board stops listing the jobs and GC removes them.
+    Returns True only when the company was new."""
+    if not _SLUG_OK.fullmatch(slug):
+        raise ValueError(f"refusing suspicious board slug: {slug!r}")
+    return db.execute(
         insert(TrackedCompany)
         .values(slug=slug, provider=provider, discovery_source=source)
         .on_conflict_do_nothing(index_elements=["slug"])
-    )
+    ).rowcount == 1
 
 
 async def _scout_github(client, db) -> int:
@@ -571,7 +560,7 @@ async def _scout_github(client, db) -> int:
             print(f"[scout] {source_url} returned {resp.status_code}")
             continue
         for provider, slug in discover_slugs(resp.text):
-            _track(db, provider, slug, "github")
+            track_company(db, provider, slug, "github")
             added += 1
     db.commit()
     return added
@@ -594,7 +583,7 @@ async def _scout_serper(client, db) -> int:
                 continue
             for item in resp.json().get("organic", []):
                 for provider, slug in discover_slugs(item.get("link", "")):
-                    _track(db, provider, slug, "serper")
+                    track_company(db, provider, slug, "serper")
                     added += 1
             db.commit()
         except httpx.HTTPError as e:      # vendor problem, expected noise

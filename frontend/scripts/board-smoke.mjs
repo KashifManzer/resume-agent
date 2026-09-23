@@ -212,6 +212,29 @@ try {
     await page.waitForFunction(text => document.querySelector('#jd')?.value === text, jd)
     assert.equal(boardCalls, 0)
   })
+  await check('pasted link shows freshness in local calendar days (T28)', async page => {
+    // 17:30 on Sep 22 in Los Angeles is already Sep 23 in UTC: the Workday bare
+    // date must still read "today", and every phrase must fit a phone line.
+    await page.clock.setFixedTime(new Date('2026-09-23T00:30:00Z'))
+    const cases = [
+      [{ posted_at: '2026-09-22', updated_at: null, board: null }, 'posted Sep 22, 2026 (today)'],
+      [{ posted_at: '2026-08-11T22:00:35', updated_at: '2026-08-26T23:07:27', board: 'added' },
+        'posted Aug 11, 2026 (42 days ago) · updated Aug 26, 2026 · company added to Board'],
+      [{ posted_at: '2026-09-22T23:03:03', updated_at: '2026-09-22T23:03:03', board: 'tracked' },
+        'posted Sep 22, 2026 (today) · company already on Board'],
+      [{ posted_at: null, updated_at: null, board: null }, 'posting date not provided by this site'],
+    ]
+    for (const [dates, expected] of cases) {
+      await page.unroute('**/jd/from-url')
+      await page.route('**/jd/from-url', route => json(route, { ...source(route.request().postDataJSON().url), ...dates }))
+      await page.goto(base + '/?url=' + encodeURIComponent(job(1).url))
+      const line = page.locator('p', { hasText: /^(posted|posting date)/ })
+      await line.waitFor()
+      assert.equal(await line.textContent(), expected)
+      assert(await line.evaluate(p => [...p.children].every(s => s.getBoundingClientRect().right <= p.getBoundingClientRect().right + 0.5)),
+        `freshness overflows at 375px: ${expected}`)
+    }
+  }, { viewport: { width: 375, height: 812 }, timezoneId: 'America/Los_Angeles' })
   await check('background refresh leaves reading position alone', async page => {
     let calls = 0
     await page.route('**/board?*', route => { calls++; return json(route, feed(1)) })

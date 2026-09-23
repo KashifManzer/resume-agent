@@ -118,10 +118,13 @@ def _generic(url: str) -> JdSource:
     body = _guarded_get(url)
     text = (trafilatura.extract(body.decode("utf-8", "replace")) or "").strip()
     warnings: list[str] = []
+    if len(text) >= config.JD_MIN_CHARS and config.OLLAMA_API_KEY:
+        text = _llm_cleanup(text) or text
+    # Checked AFTER cleanup too: a JS-rendered careers page (e.g. a branded
+    # Greenhouse ?gh_jid= link) yields only nav chrome, which the LLM correctly
+    # reduces to a one-line "no job description found".
     if len(text) < config.JD_MIN_CHARS:
         warnings.append("Couldn't extract a clear job description from this page — please paste it.")
-    elif config.OLLAMA_API_KEY:
-        text = _llm_cleanup(text) or text
     return JdSource(text=text, source_url=url, adapter="generic", warnings=warnings)
 
 

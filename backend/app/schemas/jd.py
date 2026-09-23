@@ -1,3 +1,6 @@
+from datetime import date, datetime
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -16,3 +19,10 @@ class JdSource(BaseModel):
     apply_url: str | None = None
     adapter: str  # "workday" | "greenhouse" | "lever" | "ashby" | "generic"
     warnings: list[str] = []
+    # T28 freshness, naive UTC like the Board; a bare date when that is all the
+    # source has (Workday). None when there is no date (updated_at: Greenhouse only).
+    posted_at: datetime | date | None = None
+    updated_at: datetime | None = None
+    # T28: a pasted Greenhouse/Lever/Ashby link adds its company to the Board.
+    # None = not a harvestable ATS (Workday, generic) or not a pasted link.
+    board: Literal["added", "tracked"] | None = None
