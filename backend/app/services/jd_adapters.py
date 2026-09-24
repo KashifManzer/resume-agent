@@ -95,16 +95,27 @@ class Greenhouse:
     name = "greenhouse"
 
     def match(self, url: str) -> bool:
-        return "greenhouse.io/" in url and ("/jobs/" in url or "gh_jid=" in url)
+        if "greenhouse.io/" not in url:
+            return False
+        p = urlparse(url)
+        if p.path.startswith("/embed/"):
+            # the iframe a careers site embeds: embed/job_app?for={board}&token={job id}
+            q = parse_qs(p.query)
+            return p.path.startswith("/embed/job_app") and "for" in q and "token" in q
+        return "/jobs/" in url or "gh_jid=" in url
 
     def api_url(self, url: str) -> str:
         p = urlparse(url)
         m = re.search(r"/jobs/(\d+)", p.path)
-        jid = m.group(1) if m else parse_qs(p.query).get("gh_jid", [""])[0]
+        q = parse_qs(p.query)
+        jid = m.group(1) if m else (q.get("gh_jid") or q.get("token") or [""])[0]
         return f"https://boards-api.greenhouse.io/v1/boards/{self._token(url)}/jobs/{jid}"
 
     def _token(self, url: str) -> str:
-        return urlparse(url).path.strip("/").split("/")[0]
+        p = urlparse(url)
+        if p.path.startswith("/embed/"):
+            return parse_qs(p.query)["for"][0]
+        return p.path.strip("/").split("/")[0]
 
     def board_slug(self, url: str) -> str:
         """The slug list_url takes. Lowercase, like every tracked company (T28)."""

@@ -39,6 +39,22 @@ def test_greenhouse_api_url_path_and_query_forms():
     q_url = "https://boards.greenhouse.io/acme?gh_jid=456"
     assert a.match(q_url)
     assert a.api_url(q_url) == "https://boards-api.greenhouse.io/v1/boards/acme/jobs/456"
+    # the iframe form careers sites link to: for= is the board, token= the job
+    embed = "https://job-boards.greenhouse.io/embed/job_app?for=acme&token=456&jr_id=6aa1e"
+    assert a.match(embed)
+    assert a.api_url(embed) == "https://boards-api.greenhouse.io/v1/boards/acme/jobs/456"
+
+
+@pytest.mark.parametrize("url", [
+    "https://job-boards.greenhouse.io/embed/job_app?token=456",  # no board
+    "https://job-boards.greenhouse.io/embed/job_app?for=&token=456",  # blank board
+    "https://job-boards.greenhouse.io/embed/job_app?for=acme",  # no job
+    "https://job-boards.greenhouse.io/embed/job_app?gh_jid=456",  # no board
+    "https://job-boards.greenhouse.io/embed/job_board?for=acme",  # the whole board, not a job
+])
+def test_greenhouse_embed_without_board_and_job_not_matched(url):
+    # these fall to generic, never to a board literally called "embed"
+    assert not A.by_name("greenhouse").match(url)
 
 
 def test_lever_api_url():
@@ -347,6 +363,7 @@ def test_missing_or_junk_dates_do_not_break_the_fetch():
     ("greenhouse", "https://job-boards.greenhouse.io/figma/jobs/6143238004", "figma"),
     ("greenhouse", "https://boards.greenhouse.io/Figma/jobs/6143238004?gh_jid=6143238004", "figma"),
     ("greenhouse", "https://boards.greenhouse.io/figma?gh_jid=6143238004", "figma"),
+    ("greenhouse", "https://job-boards.greenhouse.io/embed/job_app?for=StackAV&token=5234073007", "stackav"),
     ("lever", "https://jobs.lever.co/binance/60ee32bb-4dfb-4055-98a1-ec3be5479359/apply", "binance"),
     ("ashby", "https://jobs.ashbyhq.com/ramp/b3b0875d-cbf2-41ed-bda3-2714c82c4b57/application", "ramp"),
 ])
