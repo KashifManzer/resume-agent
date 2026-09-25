@@ -14,13 +14,13 @@ import { rise, stagger, useEntrance } from "@/lib/motion";
 import type { JobPostingOut } from "@/lib/types";
 import { MAX_AGE_MS, postingTime } from "@/lib/utils";
 
-function formatDate(iso: string): string {
+// A date-only vendor (Workday, Oracle, Amazon) gives a day; the time would be ours.
+function formatDate(iso: string, dateOnly: boolean): string {
   return new Date(postingTime(iso)).toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
+    ...(dateOnly ? {} : { hour: "numeric", minute: "2-digit" }),
   });
 }
 
@@ -193,9 +193,9 @@ export function Board() {
   );
 }
 
-function CompanyLogo({ slug }: { slug: string }) {
+function CompanyLogo({ slug, name }: { slug: string; name: string }) {
   const [error, setError] = useState(false);
-  const initial = slug.charAt(0).toUpperCase();
+  const initial = name.charAt(0).toUpperCase();
 
   if (error) {
     return (
@@ -208,7 +208,7 @@ function CompanyLogo({ slug }: { slug: string }) {
   return (
     <img
       src={`https://t1.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https://${slug}.com&size=128`}
-      alt={`${slug} logo`}
+      alt={`${name} logo`}
       className="h-12 w-12 shrink-0 rounded-xl object-contain p-2 bg-white shadow-sm ring-1 ring-ink/5 sm:h-24 sm:w-24 sm:p-3"
       onError={() => setError(true)}
       onLoad={(event) => {
@@ -223,10 +223,10 @@ function Row({ job }: { job: JobPostingOut }) {
   const navigate = useNavigate();
   return (
     <li className="grid grid-cols-[3rem_minmax(0,1fr)] items-center gap-4 px-4 py-5 transition hover:bg-paper-edge sm:flex sm:gap-6 sm:px-6">
-      <CompanyLogo slug={job.company_slug} />
+      <CompanyLogo slug={job.company_slug} name={job.company_name ?? job.company_slug} />
       <div className="min-w-0 flex-1 space-y-1">
         <span className="block truncate font-mono text-sm text-ink font-bold tracking-tight uppercase sm:text-lg">
-          {job.company_slug}
+          {job.company_name ?? job.company_slug}
         </span>
         <a
           href={job.url}
@@ -237,14 +237,19 @@ function Row({ job }: { job: JobPostingOut }) {
           {job.title}
         </a>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-0.5">
-          <span className="font-mono text-[13px] tracking-wide text-ink font-medium">
-            {job.location || "Remote"}
-          </span>
-          <span className="font-mono text-[13px] tracking-wide text-ink/40">
-            •
-          </span>
+          {/* no location is not "Remote": show nothing rather than guess */}
+          {job.location && (
+            <>
+              <span className="font-mono text-[13px] tracking-wide text-ink font-medium">
+                {job.location}
+              </span>
+              <span className="font-mono text-[13px] tracking-wide text-ink/40">
+                •
+              </span>
+            </>
+          )}
           <span className="font-mono text-[13px] tracking-wide text-ink/70">
-            posted {formatDate(job.created_at)}
+            posted {formatDate(job.created_at, job.date_only)}
           </span>
         </div>
       </div>

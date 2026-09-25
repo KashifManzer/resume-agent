@@ -99,7 +99,12 @@ class TrackedCompany(Base):
     __tablename__ = "tracked_companies"
 
     slug: Mapped[str] = mapped_column(String, primary_key=True)
-    provider: Mapped[str] = mapped_column(String)  # ashby | greenhouse | lever
+    provider: Mapped[str] = mapped_column(String)  # a board_sync.FETCHERS key
+    # T36: a slug alone locates a Greenhouse/Lever/Ashby board, but not a Workday
+    # site, an Oracle site or an Eightfold host. Their board URLs live here; one
+    # company may have several (Salesforce has a separate new-grad Workday site).
+    boards: Mapped[list | None] = mapped_column(JSON(none_as_null=True), default=None)
+    name: Mapped[str | None] = mapped_column(default=None)  # display name; the Board falls back to slug
     discovery_source: Mapped[str] = mapped_column(String, default="manual")
     # Last harvest ATTEMPT, success or not (T29): a failing board waits the
     # interval too. Only the harvester's staleness check reads it.

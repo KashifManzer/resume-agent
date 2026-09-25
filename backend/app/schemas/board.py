@@ -4,6 +4,8 @@ from pydantic import BaseModel, ConfigDict
 class JobPostingOut(BaseModel):
     url: str
     company_slug: str
+    company_name: str | None = None  # T36: "Applied Materials", not its Workday id
+    date_only: bool = False  # T36: the vendor gives a day, so created_at's time is when we saw it
     title: str
     location: str | None
     status: str

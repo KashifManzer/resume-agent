@@ -3,12 +3,15 @@ JSON API directly (deterministic, no LLM, structured title/location) instead of
 scraping. Registry — append new boards over time (this ticket is semi-open).
 
 Each adapter: match(url) -> bool, api_url(url) -> str (pure), parse(data, url) -> JdSource.
-The network GET (SSRF-guarded) lives in jd_fetch, so adapters stay pure + testable."""
+The network GET (SSRF-guarded) lives in jd_fetch, so adapters stay pure + testable.
+Optional flags (T36): raw = parse() gets the page text, not JSON; api_is_source =
+the posting page is built from this same source, so its "not found" is final."""
 
 import html
+import json
 import re
 from datetime import datetime, timezone
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from app.schemas.jd import JdSource
 
@@ -63,18 +66,77 @@ def object_field(data: dict, key: str) -> dict:
     return value
 
 
+_LOCALE = re.compile(r"[a-z]{2}-[a-z]{2}", re.I)
+
+
+def _job_id(url: str, pattern: str) -> str | None:
+    m = re.search(pattern, urlparse(url).path)
+    return m.group(1) if m else None
+
+
 class Workday:
     name = "workday"
+    # The posting page is a JS shell over this same API: it answers 200 even for
+    # a job that does not exist (verified 2026-09-24), so the API's 404 is final.
+    api_is_source = True
+    PAGE = 20  # 21 is an HTTP 400
+    CAP = 2000  # `total` stops here, and any offset at or past it wraps to page 1
+    _HOST = re.compile(r"([a-z0-9-]+)\.(wd\d+)\.myworkdayjobs\.com")
+    _SITE_HOST = re.compile(r"(wd\d+)\.myworkdaysite\.com")
+
+    def _parts(self, url: str) -> tuple[str, str, str, list[str]] | None:
+        """(canonical host, tenant, site, path after the site). Links also come as
+        wdN.myworkdaysite.com/[locale/]recruiting/{tenant}/{site}/..., and the
+        {tenant}.wdN.myworkdayjobs.com host serves the same API (verified)."""
+        p = urlparse(url)
+        host = (p.hostname or "").lower()
+        segs = [s for s in p.path.split("/") if s]
+        if segs and _LOCALE.fullmatch(segs[0]):
+            segs = segs[1:]
+        if m := self._HOST.fullmatch(host):
+            tenant = m.group(1)
+        elif (m := self._SITE_HOST.fullmatch(host)) and len(segs) >= 3 and segs[0] == "recruiting":
+            tenant, segs = segs[1].lower(), segs[2:]
+            host = f"{tenant}.{m.group(1)}.myworkdayjobs.com"
+        else:
+            return None
+        if not segs or segs[0] in ("job", "wday"):
+            return None
+        return host, tenant, segs[0], segs[1:]
 
     def match(self, url: str) -> bool:
-        return bool(re.search(r"\.wd\d+\.myworkdayjobs\.com/", url)) and "/job/" in url
+        parts = self._parts(url)
+        return bool(parts and len(parts[3]) >= 2 and parts[3][0] == "job")
 
     def api_url(self, url: str) -> str:
-        p = urlparse(url)
-        tenant = p.hostname.split(".")[0]
-        left, job_path = p.path.split("/job/", 1)
-        site = left.rstrip("/").split("/")[-1]  # last segment before /job/ (skips a locale like en-US)
-        return f"https://{p.hostname}/wday/cxs/{tenant}/{site}/job/{job_path}"
+        host, tenant, site, rest = self._parts(url)
+        return f"https://{host}/wday/cxs/{tenant}/{site}/{'/'.join(rest)}"
+
+    def board_of(self, url: str) -> tuple[str, str] | None:
+        """(slug, board URL) of any link into a site, or None. Slug = the tenant."""
+        parts = self._parts(url)
+        if parts is None or not re.fullmatch(r"[A-Za-z0-9_-]+", parts[2]):
+            return None
+        return parts[1], f"https://{parts[0]}/{parts[2]}"
+
+    def board(self, board_url: str) -> tuple[str, str, str]:
+        """(host, tenant, site) of a stored board URL; ValueError when it is not one."""
+        parts = self._parts(board_url)
+        if parts is None or parts[3] or not re.fullmatch(r"[A-Za-z0-9_-]+", parts[2]):
+            raise ValueError(f"not a Workday board: {board_url!r}")
+        return parts[0], parts[1], parts[2]
+
+    def list_request(self, board_url: str, offset: int) -> tuple[str, dict]:
+        host, tenant, site = self.board(board_url)
+        return (f"https://{host}/wday/cxs/{tenant}/{site}/jobs",
+                {"appliedFacets": {}, "limit": self.PAGE, "offset": offset, "searchText": ""})
+
+    def job_url(self, board_url: str, external_path: str) -> str:
+        """The sitemap's form: no locale, site then /job/... Vendor data is
+        checked: a path not starting /job/ is refused, never appended."""
+        if not external_path.startswith("/job/"):
+            raise ValueError(f"invalid Workday job path: {external_path!r}")
+        return board_url.rstrip("/") + external_path
 
     def parse(self, data: dict, url: str) -> JdSource:
         info = object_field(data, "jobPostingInfo")
@@ -236,7 +298,298 @@ class Ashby:
         )
 
 
-ADAPTERS = [Workday(), Greenhouse(), Lever(), Ashby()]
+def _not_found(what: str):
+    from app.services.jd_fetch import JdFetchError  # local: avoid import cycle
+
+    return JdFetchError(f"{what} not found", status_code=404)
+
+
+class Oracle:
+    """Oracle Recruiting Cloud (T36): Oracle, Dell, Texas Instruments."""
+    name = "oracle"
+    api_is_source = True  # the candidate page is a JS shell over this REST API
+    PAGE = 200  # the API's maximum (500 returns 200)
+    # pods may hold hyphens: fa-espx-saasfaprod1 (244 of 2,383 Simplify links)
+    _HOST = re.compile(r"[a-z0-9-]+\.fa\.(?:[a-z0-9-]+\.)*oraclecloud\.com")
+    _PATH = re.compile(r"/hcmUI/CandidateExperience/[^/]+/sites/([A-Za-z0-9_-]+)(?:/job/(\d+))?/?")
+    _REST = "hcmRestApi/resources/latest"
+
+    def _parts(self, url: str) -> tuple[str, str, str | None] | None:
+        p = urlparse(url)
+        host = (p.hostname or "").lower()
+        m = self._PATH.fullmatch(p.path)
+        return (host, m.group(1), m.group(2)) if self._HOST.fullmatch(host) and m else None
+
+    def match(self, url: str) -> bool:
+        return bool((parts := self._parts(url)) and parts[2])
+
+    def api_url(self, url: str) -> str:
+        host, site, jid = self._parts(url)
+        return (f"https://{host}/{self._REST}/recruitingCEJobRequisitionDetails"
+                f"?expand=all&onlyData=true&finder=ById;Id=%22{jid}%22,siteNumber={site}")
+
+    def board_of(self, url: str) -> tuple[str, str] | None:
+        """(slug, board URL), or None. Slug = the pod, e.g. "eeho"."""
+        parts = self._parts(url)
+        if parts is None:
+            return None
+        return parts[0].split(".")[0], f"https://{parts[0]}/hcmUI/CandidateExperience/en/sites/{parts[1]}"
+
+    def board(self, board_url: str) -> tuple[str, str]:
+        parts = self._parts(board_url)
+        if parts is None or parts[2]:
+            raise ValueError(f"not an Oracle board: {board_url!r}")
+        return parts[0], parts[1]
+
+    def list_url(self, board_url: str, offset: int) -> str:
+        host, site = self.board(board_url)
+        return (f"https://{host}/{self._REST}/recruitingCEJobRequisitions?onlyData=true"
+                f"&expand=requisitionList.secondaryLocations&finder=findReqs;siteNumber={site},"
+                f"limit={self.PAGE},offset={offset},sortBy=POSTING_DATES_DESC")
+
+    def job_url(self, board_url: str, jid) -> str:
+        return f"{board_url.rstrip('/')}/job/{quote(str(jid), safe='')}"
+
+    def parse(self, data: dict, url: str) -> JdSource:
+        items = data.get("items")
+        if items == []:  # an unknown or closed id is a 200 with no items (verified)
+            raise _not_found("Oracle posting")
+        if not isinstance(items, list) or not isinstance(items[0], dict):
+            raise ValueError("invalid Oracle posting: expected items")
+        job = items[0]
+        sections = [job.get(k) or "" for k in (
+            "ExternalDescriptionStr", "ExternalResponsibilitiesStr", "ExternalQualificationsStr")]
+        return JdSource(
+            text="\n\n".join(t for t in map(_strip_html, sections) if t),
+            title=job.get("Title"),
+            location=job.get("PrimaryLocation"),
+            source_url=url,
+            apply_url=url,
+            adapter=self.name,
+            posted_at=parse_ats_date(job.get("ExternalPostedStartDate")),
+        )
+
+
+class SmartRecruiters:
+    """ServiceNow, Western Digital, Arista (T36), via the documented public
+    Posting API. Case-insensitive company ids (verified)."""
+    name = "smartrecruiters"
+    # A closed posting still answers 200, with "active": false (6 of 6 postings
+    # Simplify marked inactive, 2026-09-24), so the API's word is final.
+    api_is_source = True
+    PAGE = 100  # the API's maximum (200 returns 100)
+    _API = "https://api.smartrecruiters.com/v1/companies"
+
+    def _parts(self, url: str) -> tuple[str, str] | None:
+        p = urlparse(url)
+        # ids are numbers, or UUIDs on older postings (the API takes both, verified)
+        m = re.fullmatch(r"/([A-Za-z0-9_-]+)/(\d+|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:-[^/]*)?/?", p.path)
+        return (m.group(1), m.group(2)) if p.hostname == "jobs.smartrecruiters.com" and m else None
+
+    def match(self, url: str) -> bool:
+        return self._parts(url) is not None
+
+    def api_url(self, url: str) -> str:
+        company, jid = self._parts(url)
+        return f"{self._API}/{company}/postings/{jid}"
+
+    def board_slug(self, url: str) -> str:
+        return self._parts(url)[0].lower()
+
+    def list_url(self, slug: str, offset: int = 0) -> str:
+        return f"{self._API}/{slug}/postings?limit={self.PAGE}&offset={offset}"
+
+    def job_url(self, company: str, jid: str) -> str:
+        return f"https://jobs.smartrecruiters.com/{quote(company, safe='')}/{quote(str(jid), safe='')}"
+
+    def parse(self, data: dict, url: str) -> JdSource:
+        if data.get("active") is False:
+            raise _not_found("SmartRecruiters posting")
+        sections = object_field(object_field(data, "jobAd"), "sections")
+        text = [_strip_html(object_field(sections, k).get("text") or "") for k in (
+            "jobDescription", "qualifications", "additionalInformation")]
+        return JdSource(
+            text="\n\n".join(t for t in text if t),
+            title=data.get("name"),
+            location=object_field(data, "location").get("fullLocation"),
+            company=object_field(data, "company").get("name"),
+            source_url=url,
+            apply_url=data.get("applyUrl") or url,
+            adapter=self.name,
+            posted_at=parse_ats_date(data.get("releasedDate")),
+        )
+
+
+def epoch_seconds(value) -> str | None:
+    """Eightfold sends epoch SECONDS; parse_ats_date reads bare digits as Lever's
+    milliseconds, so hand it an ISO string instead."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+class Eightfold:
+    """Microsoft, Qualcomm, PayPal, Lam Research (T36). robots.txt allows /api/pcsx."""
+    name = "eightfold"
+    api_is_source = True  # a bogus id is an HTTP 404 "Position not found" (verified)
+    PAGE = 10  # fixed; `num` is ignored
+    _HOST = re.compile(r"[a-z0-9-]+\.eightfold\.ai|apply\.careers\.microsoft\.com")
+
+    def _host(self, url: str) -> str | None:
+        host = (urlparse(url).hostname or "").lower()
+        return host if self._HOST.fullmatch(host) else None
+
+    def match(self, url: str) -> bool:
+        return bool(self._host(url) and _job_id(url, r"^/careers/job/(\d+)/?$"))
+
+    def api_url(self, url: str) -> str:
+        # `domain` is not needed for a single position (verified)
+        return (f"https://{self._host(url)}/api/pcsx/position_details"
+                f"?position_id={_job_id(url, r'^/careers/job/(\d+)/?$')}&hl=en")
+
+    def board(self, board_url: str) -> tuple[str, str]:
+        host = self._host(board_url)
+        domain = parse_qs(urlparse(board_url).query).get("domain", [""])[0]
+        if not host or not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", domain):
+            raise ValueError(f"not an Eightfold board: {board_url!r}")
+        return host, domain
+
+    def list_url(self, board_url: str, location: str, start: int) -> str:
+        host, domain = self.board(board_url)
+        return (f"https://{host}/api/pcsx/search?domain={domain}&query="
+                f"&location={quote(location)}&start={start}&sort_by=timestamp")
+
+    def job_url(self, board_url: str, jid) -> str:
+        return f"https://{self.board(board_url)[0]}/careers/job/{quote(str(jid), safe='')}"
+
+    def parse(self, data: dict, url: str) -> JdSource:
+        job = object_field(data, "data")
+        if not job:  # a gone position is an HTTP 404 (verified), so this is just malformed
+            raise ValueError("invalid Eightfold position: no data")
+        locations = job.get("locations") or []
+        return JdSource(
+            text=_strip_html(job.get("jobDescription") or ""),
+            title=job.get("name"),
+            location=" | ".join(x for x in locations if isinstance(x, str)) or None,
+            source_url=url,
+            apply_url=job.get("publicUrl") or url,
+            adapter=self.name,
+            posted_at=parse_ats_date(epoch_seconds(job.get("postedTs"))),
+        )
+
+
+class Amazon:
+    """amazon.jobs (T36). No JSON per job: the page itself is the source, and it
+    extracts cleanly (verified: 6k chars) and 404s once a job is gone."""
+    name = "amazon"
+    api_is_source = True
+    raw = True  # parse() gets the page, not JSON
+    PAGE = 100  # the maximum; result_limit=500 fails
+
+    def match(self, url: str) -> bool:
+        return (urlparse(url).hostname or "") in ("amazon.jobs", "www.amazon.jobs") \
+            and bool(_job_id(url, r"^/[a-z-]+/jobs/(\d+)"))
+
+    def api_url(self, url: str) -> str:
+        return url
+
+    # Where target roles sit (1,000 newest US "engineer" jobs, 2026-09-24): Software
+    # Development held only 241 of 313; security/SRE, ops/platform, data and BI
+    # engineers the rest. Repeated category[] ORs (1,759 + 496 + 88 = 2,343 hits).
+    CATEGORIES = ("software-development", "systems-quality-security-engineering",
+                  "operations-it-support-engineering", "data-science", "business-intelligence",
+                  "database-administration")
+
+    def list_url(self, country: str, offset: int) -> str:
+        categories = "".join(f"category%5B%5D={c}&" for c in self.CATEGORIES)
+        return (f"https://www.amazon.jobs/en/search.json?{categories}"
+                f"country={country}&sort=recent&result_limit={self.PAGE}&offset={offset}")
+
+    def job_url(self, job_path: str) -> str:
+        # without the leading slash, "@evil.com/x" would make the host evil.com
+        if not job_path.startswith("/"):
+            raise ValueError(f"invalid Amazon job path: {job_path!r}")
+        return "https://www.amazon.jobs" + job_path
+
+    def parse(self, page: str, url: str) -> JdSource:
+        import trafilatura
+
+        from app.core import config
+
+        text = (trafilatura.extract(page) or "").strip()
+        if len(text) < config.JD_MIN_CHARS:  # e.g. a block page: let generic warn "please paste"
+            raise ValueError("Amazon page has no job description")
+        meta = trafilatura.extract_metadata(page)  # its <title> is the job title (verified)
+        return JdSource(text=text, title=meta.title if meta else None, source_url=url, apply_url=url,
+                        adapter=self.name)
+
+
+def apple_data(page: str) -> dict:
+    """Apple's pages carry their data as JSON.parse("...") of the router state."""
+    # a whole JS string literal: a lazy ".*?" would stop at a \"); inside a job's text
+    m = re.search(r'__staticRouterHydrationData = JSON.parse\(("(?:[^"\\]|\\.)*")\);', page, re.S)
+    if not m:
+        raise ValueError("invalid Apple page: no router data")
+    return object_field(json.loads(json.loads(m.group(1))), "loaderData")
+
+
+class Apple:
+    """jobs.apple.com (T36). No robots.txt (404, verified)."""
+    name = "apple"
+    api_is_source = True  # a bogus id still returns a 200 page, just without jobsData
+    raw = True
+    PAGE = 20
+
+    def match(self, url: str) -> bool:
+        return urlparse(url).hostname == "jobs.apple.com" and bool(_job_id(url, r"/details/([\w-]+)"))
+
+    def api_url(self, url: str) -> str:
+        return url
+
+    def list_url(self, location: str, page: int) -> str:
+        return f"https://jobs.apple.com/en-us/search?sort=newest&location={location}&page={page}"
+
+    def job_url(self, position_id: str) -> str:
+        return f"https://jobs.apple.com/en-us/details/{quote(str(position_id), safe='')}"
+
+    def parse(self, page: str, url: str) -> JdSource:
+        data = apple_data(page)
+        if "jobDetails" not in data:  # a bogus id: a 200 page whose data holds only "root" (verified)
+            raise _not_found("Apple job")
+        job = object_field(object_field(data, "jobDetails"), "jobsData")
+        if not job:
+            raise ValueError("invalid Apple job: no jobsData")
+        parts = [job.get(k) or "" for k in (
+            "jobSummary", "description", "minimumQualifications", "preferredQualifications")]
+        if any(not isinstance(p, str) for p in parts):
+            raise ValueError("invalid Apple job: expected text")
+        return JdSource(
+            text="\n\n".join(p.strip() for p in parts if p.strip()),
+            title=job.get("postingTitle"),
+            location=apple_location(job.get("locations")),
+            source_url=url,
+            apply_url=url,
+            adapter=self.name,
+            posted_at=parse_ats_date(job.get("postDateInGMT")),
+        )
+
+
+def apple_location(locations) -> str | None:
+    """"Cupertino, California, United States" per location, joined like the
+    other vendors' multi-location strings."""
+    if not isinstance(locations, list):
+        return None
+    units = [", ".join(dict.fromkeys(filter(None, (loc.get("city"), loc.get("stateProvince"),
+                                                  loc.get("countryName") or loc.get("name")))))
+             for loc in locations if isinstance(loc, dict)]
+    return " | ".join(u for u in units if u) or None
+
+
+ADAPTERS = [Workday(), Greenhouse(), Lever(), Ashby(), Oracle(), SmartRecruiters(), Eightfold(),
+            Amazon(), Apple()]
 
 
 def by_name(name: str):

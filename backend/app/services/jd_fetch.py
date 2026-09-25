@@ -19,9 +19,10 @@ _UA = "Mozilla/5.0 (compatible; resume-agent/1.0; +jd-fetch)"
 class JdFetchError(Exception):
     """Bad/blocked URL or unfetchable page — surfaced as 4xx by the router."""
 
-    def __init__(self, message: str, *, status_code: int | None = None):
+    def __init__(self, message: str, *, status_code: int | None = None, body: bytes = b""):
         super().__init__(message)
         self.status_code = status_code
+        self.body = body  # the start of an error response, for gone() below
 
 
 class JdUnavailable(JdFetchError):
@@ -72,7 +73,8 @@ def _guarded_get(url: str, *, transport: httpx.BaseTransport | None = None) -> b
                     url = urljoin(url, loc)
                     continue
                 if resp.status_code >= 400:
-                    raise JdFetchError(f"fetch failed: HTTP {resp.status_code}", status_code=resp.status_code)
+                    raise JdFetchError(f"fetch failed: HTTP {resp.status_code}", status_code=resp.status_code,
+                                       body=next(resp.iter_bytes(1024), b""))
                 total, chunks = 0, []
                 for chunk in resp.iter_bytes():
                     total += len(chunk)
@@ -93,7 +95,10 @@ def fetch_jd_from_url(url: str) -> JdSource:
     for adapter in jd_adapters.ADAPTERS:
         if adapter.match(url):
             try:
-                data = json.loads(_guarded_get(adapter.api_url(url)))
+                body = _guarded_get(adapter.api_url(url))
+                if getattr(adapter, "raw", False):
+                    return adapter.parse(body.decode("utf-8", "replace"), url)
+                data = json.loads(body)
                 if not isinstance(data, dict):
                     raise ValueError("invalid ATS posting: expected an object")
                 return adapter.parse(data, url)
@@ -102,7 +107,11 @@ def fetch_jd_from_url(url: str) -> JdSource:
                 # UNLISTED/confidential posting (reachable by direct link, absent
                 # from the API), an API disabled for that org, or an outage. The
                 # posting PAGE still carries the JD, so fall back to scraping it.
-                ats_missing = isinstance(e, JdFetchError) and e.status_code in (404, 410)
+                ats_missing = isinstance(e, JdFetchError) and _gone(e)
+                if ats_missing and getattr(adapter, "api_is_source", False):
+                    # T36: that page is a shell over this same source (Workday
+                    # always answers 200), so there is nothing left to scrape.
+                    raise JdUnavailable("This job is no longer available.", status_code=410) from e
                 break
     try:
         return _generic(url)
@@ -110,6 +119,12 @@ def fetch_jd_from_url(url: str) -> JdSource:
         if ats_missing and e.status_code in (404, 410):
             raise JdUnavailable("This job is no longer available.", status_code=410) from e
         raise
+
+
+def _gone(e: JdFetchError) -> bool:
+    """404/410, or Workday's answer for a closed job: a JSON 403 "S22 permission
+    denied" (9 of 10 closed postings, 2026-09-24). A CDN's 403 is HTML."""
+    return e.status_code in (404, 410) or (e.status_code == 403 and b'"errorCode":"S22"' in e.body)
 
 
 def _generic(url: str) -> JdSource:

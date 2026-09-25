@@ -163,6 +163,8 @@ export const OUTER_LOOP_MAX = 5
 export interface JobPostingOut {
   url: string
   company_slug: string
+  company_name: string | null
+  date_only: boolean
   title: string
   location: string | null
   status: string

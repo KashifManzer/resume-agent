@@ -4,10 +4,10 @@ from sqlalchemy import select, func, update
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import JobPosting
+from app.models import JobPosting, TrackedCompany
 from app.schemas.board import BoardFeedOut, JobPostingOut
 from app.schemas.jd import JdSource
-from app.services import board_policy, jd_fetch
+from app.services import board_policy, board_sync, jd_fetch
 
 router = APIRouter(prefix="/board", tags=["board"])
 
@@ -26,19 +26,21 @@ def get_board_feed(
         select(func.count()).select_from(JobPosting).where(*eligible)
     ).scalar()
 
-    jobs = db.execute(
-        select(JobPosting)
+    rows = db.execute(
+        select(JobPosting, TrackedCompany.name, TrackedCompany.provider)
+        .outerjoin(TrackedCompany, JobPosting.company_slug == TrackedCompany.slug)
         .where(*eligible)
         .order_by(JobPosting.created_at.desc(), JobPosting.url.asc())
         .offset(offset)
         .limit(limit)
-    ).scalars().all()
+    ).all()
 
     has_more = (offset + limit) < total_count
     total_pages = (total_count + limit - 1) // limit
 
     return BoardFeedOut(
-        jobs=[JobPostingOut.model_validate(j) for j in jobs],
+        jobs=[JobPostingOut.model_validate(j).model_copy(update={
+            "company_name": name, "date_only": provider in board_sync.DATE_ONLY}) for j, name, provider in rows],
         has_more=has_more,
         total_pages=total_pages
     )

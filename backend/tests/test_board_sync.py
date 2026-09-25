@@ -10,6 +10,13 @@ def posting_clock(monkeypatch):
     monkeypatch.setattr(board_policy, "utcnow", lambda: datetime(2026, 1, 3, 12))
 
 
+@pytest.fixture(autouse=True)
+def no_curated_boards(monkeypatch):
+    # _harvest_cycle seeds the F500 list; these tests count exactly their own boards.
+    from app.services import board_sync
+    monkeypatch.setattr(board_sync, "F500_BOARDS", [])
+
+
 def test_admits_the_generalist_and_in_band_engineering_roles():
     for t in [
         "Software Engineer", "sOfTwArE EnGiNeEr", "Software Engineer, Compute Foundations",
@@ -346,6 +353,9 @@ def _fake_board(payload, status=200, headers=None):
 
         async def aiter_bytes(self):
             yield body
+
+        async def aread(self):
+            return body
 
     class Stream:
         async def __aenter__(self): return Resp()
@@ -1173,7 +1183,7 @@ def test_discover_slugs_never_yields_the_greenhouse_embed_path():
     assert board_sync.discover_slugs(text) == [("ashby", "embedding-vc")]
 
 
-def test_serper_rotates_the_phrase_across_all_four_sites(monkeypatch, capsys):
+def test_serper_rotates_the_phrase_across_every_site(monkeypatch, capsys):
     monkeypatch.setenv("SERPER_API_KEY", "k")
     asked = []
     class Resp:
@@ -1183,12 +1193,15 @@ def test_serper_rotates_the_phrase_across_all_four_sites(monkeypatch, capsys):
             if "jobs.ashbyhq.com" in self.q:
                 return {"organic": [{"link": "https://jobs.ashbyhq.com/newco/1"},
                                     {"link": "https://jobs.ashbyhq.com/newco/2"}]}
+            if "myworkdayjobs.com" in self.q:  # T36: a Workday result becomes a board
+                return {"organic": [{"link": "https://acme.wd5.myworkdayjobs.com/en-US/External/job/X/SWE_R1"}]}
             return {"organic": [{"link": "https://www.youtube.com/watch?v=x"}]}  # site: fell back
     class Client:
         async def post(self, url, json=None, **kw):
             asked.append(json); return Resp(json["q"])
     with _db.SessionLocal() as db:
-        assert asyncio.run(board_sync._scout_serper(Client(), db)) == 1
+        assert asyncio.run(board_sync._scout_serper(Client(), db)) == 2
+        assert db.get(TrackedCompany, "acme").boards == ["https://acme.wd5.myworkdayjobs.com/External"]
     assert [q["q"].split('"')[0].strip() for q in asked] == [f"site:{s}" for s in board_sync.SERPER_SITES]
     assert len({q["q"].split('"')[1] for q in asked}) == 1          # one phrase per day
     assert all(set(q) == {"q"} for q in asked)                        # no page/tbs: both break site:
@@ -1332,7 +1345,7 @@ def test_each_lane_reuses_one_connection(monkeypatch):
     monkeypatch.setattr(board_sync.httpx, "AsyncClient", Counting)
     monkeypatch.setattr(board_sync, "JITTER", (0, 0))
     asyncio.run(board_sync._harvest_cycle())
-    assert len(made) == 3
+    assert len(made) == len(board_sync._lanes())  # one per worker, idle ones included
 
 
 H = timedelta(hours=1)

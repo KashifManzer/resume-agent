@@ -423,7 +423,7 @@ def test_pasting_a_parked_company_queues_it_for_the_next_harvest(monkeypatch):
 
 @pytest.mark.parametrize("adapter, url", [
     ("generic", "https://careers.example.com/jobs/1"),      # includes an ATS whose API failed over to generic
-    ("workday", "https://nvidia.wd5.myworkdayjobs.com/x/job/y"),
+    ("eightfold", "https://qualcomm.eightfold.ai/careers/job/446721162271"),  # no `domain` in its links
 ])
 def test_untrackable_sources_add_nothing(monkeypatch, adapter, url):
     r = _paste(monkeypatch, JdSource(text="x", source_url=url, adapter=adapter))
@@ -462,3 +462,248 @@ def test_generic_llm_cleanup_of_a_real_jd_does_not_warn(monkeypatch):
     monkeypatch.setattr(jd_fetch.config, "OLLAMA_API_KEY", "set")
     monkeypatch.setattr(jd_fetch, "_llm_cleanup", lambda text: text)
     assert jd_fetch.fetch_jd_from_url("https://careers.example.com/jobs/1").warnings == []
+
+
+# --- T36: Workday link forms, Oracle, SmartRecruiters, Eightfold, Amazon, Apple ---
+
+@pytest.mark.parametrize("url, api", [
+    ("https://wd5.myworkdaysite.com/recruiting/chewy/External/job/Bellevue-WA/Software-Engineer_R1",
+     "https://chewy.wd5.myworkdayjobs.com/wday/cxs/chewy/External/job/Bellevue-WA/Software-Engineer_R1"),
+    ("https://wd5.myworkdaysite.com/en-US/recruiting/guidewire/external/job/US-Remote/SWE_R2",
+     "https://guidewire.wd5.myworkdayjobs.com/wday/cxs/guidewire/external/job/US-Remote/SWE_R2"),
+    ("https://NVIDIA.wd5.myworkdayjobs.com/en-us/NVIDIAExternalCareerSite/job/US-CA/SWE_JR1?source=x",
+     "https://nvidia.wd5.myworkdayjobs.com/wday/cxs/nvidia/NVIDIAExternalCareerSite/job/US-CA/SWE_JR1"),
+])
+def test_workday_link_forms_all_reach_the_api(url, api):
+    a = A.by_name("workday")
+    assert a.match(url) and a.api_url(url) == api
+
+
+@pytest.mark.parametrize("url", [
+    "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite",           # the site, not a job
+    "https://nvidia.wd5.myworkdayjobs.com/wday/cxs/nvidia/x/job/y",          # the API itself
+    "https://nvidia.wd5.myworkdayjobs.com/en-US/job/y",
+    "https://wd5.myworkdaysite.com/recruiting/chewy",                        # no site
+    "https://nvidia.wd5.myworkdayjobs.com.evil.com/x/job/y",
+    "https://evil.com/nvidia.wd5.myworkdayjobs.com/x/job/y",
+])
+def test_workday_does_not_match_non_jobs_or_other_hosts(url):
+    assert not A.by_name("workday").match(url)
+
+
+def _api_then_page(monkeypatch, api_answer, page_answer=b"<html>shell</html>"):
+    calls = []
+
+    def get(url, **kw):
+        calls.append(url)
+        answer = api_answer if len(calls) == 1 else page_answer
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    monkeypatch.setattr(jd_fetch, "_guarded_get", get)
+    return calls
+
+
+@pytest.mark.parametrize("url", [
+    "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite/job/US-CA/SWE_JR1",
+    "https://eeho.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_45001/job/1",
+    "https://apply.careers.microsoft.com/careers/job/1970393557006854",
+    "https://www.amazon.jobs/en/jobs/10558915/sde-i",
+    "https://jobs.apple.com/en-us/details/200684986",
+    "https://jobs.smartrecruiters.com/ServiceNow/744000151698539",
+])
+def test_a_404_from_a_source_behind_a_js_shell_is_final(monkeypatch, url):
+    # Workday's page answers 200 even for a job that does not exist (verified),
+    # so scraping it after the API 404s would only find an empty shell.
+    calls = _api_then_page(monkeypatch, jd_fetch.JdFetchError("gone", status_code=404))
+    with pytest.raises(jd_fetch.JdUnavailable):
+        jd_fetch.fetch_jd_from_url(url)
+    assert len(calls) == 1
+
+
+def test_greenhouse_still_asks_the_page_after_an_api_404(monkeypatch):
+    # unlisted postings: the API 404s while the page carries the JD (T26)
+    calls = _api_then_page(monkeypatch, jd_fetch.JdFetchError("gone", status_code=404),
+                           _fixture("generic_job.html").encode())
+    assert jd_fetch.fetch_jd_from_url("https://job-boards.greenhouse.io/acme/jobs/1").adapter == "generic"
+    assert len(calls) == 2
+
+
+ORACLE_JOB = "https://eeho.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_45001/job/344707"
+
+
+def test_oracle_detail():
+    a = A.by_name("oracle")
+    assert a.match(ORACLE_JOB) and not a.match(ORACLE_JOB.rsplit("/job/", 1)[0])
+    assert a.api_url(ORACLE_JOB) == ("https://eeho.fa.us2.oraclecloud.com/hcmRestApi/resources/latest/"
+                                     "recruitingCEJobRequisitionDetails?expand=all&onlyData=true"
+                                     "&finder=ById;Id=%22344707%22,siteNumber=CX_45001")
+    src = a.parse({"items": [{"Title": "Software Engineer", "PrimaryLocation": "Nashville, TN, United States",
+                              "ExternalDescriptionStr": "<p>Build &amp; ship</p>", "ExternalResponsibilitiesStr": None,
+                              "ExternalQualificationsStr": "<ul><li>Python</li></ul>",
+                              "ExternalPostedStartDate": "2026-09-24T17:20:33+00:00"}]}, ORACLE_JOB)
+    assert src.text == "Build & ship\n\nPython"
+    assert (src.title, src.location, src.posted_at) == ("Software Engineer", "Nashville, TN, United States",
+                                                        datetime(2026, 9, 24, 17, 20, 33))
+    assert A.by_name("oracle").board_of(ORACLE_JOB) == (
+        "eeho", "https://eeho.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_45001")
+
+
+def test_an_oracle_id_it_does_not_know_is_unavailable(monkeypatch):
+    # verified: a 200 with no items, not a 404
+    _api_then_page(monkeypatch, json.dumps({"items": [], "count": 0}).encode())
+    with pytest.raises(jd_fetch.JdUnavailable):
+        jd_fetch.fetch_jd_from_url(ORACLE_JOB)
+
+
+def test_smartrecruiters_detail():
+    a = A.by_name("smartrecruiters")
+    url = "https://jobs.smartrecruiters.com/ServiceNow/744000151698539-principal-software-engineer"
+    assert a.match(url) and a.match("https://jobs.smartrecruiters.com/ServiceNow/744000151698539")
+    assert not a.match("https://jobs.smartrecruiters.com/oneclick-ui/company/x")
+    assert a.api_url(url) == "https://api.smartrecruiters.com/v1/companies/ServiceNow/postings/744000151698539"
+    assert a.board_slug(url) == "servicenow"
+    src = a.parse({"name": "Software Engineer", "releasedDate": "2026-09-24T20:14:46.889Z",
+                   "applyUrl": url + "?oga=true", "company": {"name": "ServiceNow"},
+                   "location": {"fullLocation": "Santa Clara, CALIFORNIA, United States"},
+                   "jobAd": {"sections": {"companyDescription": {"text": "<p>About us</p>"},
+                                          "jobDescription": {"text": "<p>Build</p>"},
+                                          "qualifications": {"text": "<p>Python</p>"}}}}, url)
+    assert src.text == "Build\n\nPython"  # the company blurb is not the job
+    assert (src.company, src.apply_url, src.posted_at) == ("ServiceNow", url + "?oga=true",
+                                                          datetime(2026, 9, 24, 20, 14, 46, 889000))
+
+
+def test_eightfold_detail():
+    a = A.by_name("eightfold")
+    url = "https://qualcomm.eightfold.ai/careers/job/446721162271"
+    assert a.match(url) and a.match("https://apply.careers.microsoft.com/careers/job/1970393557006854")
+    assert not a.match("https://evil.ai/careers/job/1") and not a.match("https://qualcomm.eightfold.ai/careers")
+    assert a.api_url(url) == "https://qualcomm.eightfold.ai/api/pcsx/position_details?position_id=446721162271&hl=en"
+    src = a.parse({"status": 200, "data": {"name": "Backend Software Engineer", "jobDescription": "<p>Build</p>",
+                                           "locations": ["San Diego, California, United States"],
+                                           "postedTs": 1790281689,
+                                           "publicUrl": "https://careers.qualcomm.com/careers/job/446721162271"}}, url)
+    assert (src.text, src.location, src.apply_url) == ("Build", "San Diego, California, United States",
+                                                       "https://careers.qualcomm.com/careers/job/446721162271")
+    assert src.posted_at == datetime(2026, 9, 24, 20, 28, 9)  # seconds, not Lever's milliseconds
+    with pytest.raises(ValueError):  # the real "gone" is an HTTP 404, tested above
+        a.parse({"status": 200, "data": {}}, url)
+
+
+def test_amazon_reads_the_page_itself(monkeypatch):
+    page = ("<html><head><title>Software Development Engineer I</title></head>"
+            "<body><article><h1>Software Development Engineer I</h1>"
+            + "".join(f"<p>Build distributed systems that serve millions of customers, part {i}.</p>"
+                      for i in range(12))
+            + "</article></body></html>").encode()
+    calls = _api_then_page(monkeypatch, page)
+    src = jd_fetch.fetch_jd_from_url("https://www.amazon.jobs/en/jobs/10558915/sde-i")
+    assert src.adapter == "amazon" and "distributed systems" in src.text and len(calls) == 1
+    assert src.title == "Software Development Engineer I"
+    assert not A.by_name("amazon").match("https://www.amazon.jobs/en/search?base_query=sde")
+
+
+def _apple(job):
+    # a bogus id's page carries only "root" (verified); a real one adds jobDetails
+    state = {"loaderData": {"root": {}, **({"jobDetails": {"jobsData": job}} if job is not None else {})}}
+    data = json.dumps(json.dumps(state))
+    return f"<script>window.__staticRouterHydrationData = JSON.parse({data});</script>".encode()
+
+
+def test_apple_reads_the_data_in_its_page(monkeypatch):
+    _api_then_page(monkeypatch, _apple({
+        "postingTitle": "Firmware Engineer", "jobSummary": "At Apple.", "description": "Build HID.",
+        "minimumQualifications": "C/C++", "preferredQualifications": None,
+        "postDateInGMT": "2026-09-22T00:46:38.691+00:00",
+        "locations": [{"city": "Cupertino", "stateProvince": "California", "countryName": "United States"},
+                      {"name": "United States", "countryName": "United States"}]}))
+    src = jd_fetch.fetch_jd_from_url("https://jobs.apple.com/en-us/details/200684986")
+    assert src.text == "At Apple.\n\nBuild HID.\n\nC/C++"
+    assert src.location == "Cupertino, California, United States | United States"
+    assert src.posted_at == datetime(2026, 9, 22, 0, 46, 38, 691000)
+
+
+def test_an_apple_page_without_its_job_is_unavailable(monkeypatch):
+    # verified: a bogus id is still a 200 page, just without jobDetails
+    _api_then_page(monkeypatch, _apple(None))
+    with pytest.raises(jd_fetch.JdUnavailable):
+        jd_fetch.fetch_jd_from_url("https://jobs.apple.com/en-us/details/999999999")
+
+
+@pytest.mark.parametrize("adapter, url, slug, boards", [
+    ("workday", "https://wd5.myworkdaysite.com/recruiting/chewy/External/job/Bellevue-WA/SWE_R1",
+     "chewy", ["https://chewy.wd5.myworkdayjobs.com/External"]),
+    ("oracle", ORACLE_JOB, "eeho", ["https://eeho.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_45001"]),
+    ("smartrecruiters", "https://jobs.smartrecruiters.com/ServiceNow/744000151698539", "servicenow", None),
+])
+def test_a_pasted_link_tracks_its_board(monkeypatch, adapter, url, slug, boards):
+    assert _paste(monkeypatch, JdSource(text="x", source_url=url, adapter=adapter)).json()["board"] == "added"
+    with _db.SessionLocal() as db:
+        company = db.get(TrackedCompany, slug)
+        assert (company.provider, company.boards, company.discovery_source) == (adapter, boards, "pasted")
+    assert _paste(monkeypatch, JdSource(text="x", source_url=url, adapter=adapter)).json()["board"] == "tracked"
+
+
+@pytest.mark.parametrize("url, answer", [
+    (ORACLE_JOB, json.dumps({"title": "Service Unavailable"}).encode()),     # no items at all
+    ("https://apply.careers.microsoft.com/careers/job/1", json.dumps({"status": 200}).encode()),
+    ("https://jobs.apple.com/en-us/details/200684986", _apple({})),           # jobDetails, no jobsData
+    ("https://jobs.apple.com/en-us/details/200684986", b"<html>maintenance</html>"),
+])
+def test_an_ambiguous_answer_never_closes_a_job(monkeypatch, url, answer):
+    # Only each vendor's verified "gone" signal may raise JdUnavailable; anything
+    # else falls back to the page, which the Board treats as "retry", not closed.
+    _api_then_page(monkeypatch, answer)
+    assert jd_fetch.fetch_jd_from_url(url).adapter == "generic"
+
+
+def test_a_thin_amazon_page_falls_back_to_the_generic_warning(monkeypatch):
+    _api_then_page(monkeypatch, b"<html><body>Robot check</body></html>")
+    src = jd_fetch.fetch_jd_from_url("https://www.amazon.jobs/en/jobs/10558915/sde-i")
+    assert src.adapter == "generic" and src.warnings
+
+
+def test_a_closed_smartrecruiters_posting_is_unavailable(monkeypatch):
+    # verified live: closed postings answer 200 with "active": false, and so does their page
+    calls = _api_then_page(monkeypatch, json.dumps({"active": False, "name": "Software Engineer",
+                                                    "jobAd": {"sections": {}}}).encode())
+    with pytest.raises(jd_fetch.JdUnavailable):
+        jd_fetch.fetch_jd_from_url("https://jobs.smartrecruiters.com/Visa/744000106245998")
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("body, closed", [
+    (b'{"errorCode":"S22","errorCaseId":"F6D1CAMUG2BEV4","httpStatus":403,"message":"permission denied"}', True),
+    (b"<html>Just a moment...</html>", False),  # a CDN challenge says nothing about the job
+])
+def test_a_closed_workday_job_is_a_json_403(monkeypatch, body, closed):
+    url = "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite/job/US-CA/SWE_JR1"
+    transport = httpx.MockTransport(lambda request: httpx.Response(403, content=body))
+    real = jd_fetch._guarded_get
+    monkeypatch.setattr(jd_fetch, "_check_url", lambda url: None)
+    monkeypatch.setattr(jd_fetch, "_guarded_get", lambda u, **kw: real(u, transport=transport))
+    if closed:
+        with pytest.raises(jd_fetch.JdUnavailable):
+            jd_fetch.fetch_jd_from_url(url)
+    else:
+        with pytest.raises(jd_fetch.JdFetchError) as info:
+            jd_fetch.fetch_jd_from_url(url)
+        assert not isinstance(info.value, jd_fetch.JdUnavailable)
+
+
+@pytest.mark.parametrize("url", [
+    "https://fa-espx-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1/job/2422377",
+    "https://jobs.smartrecruiters.com/ServiceNow/2274d8e3-af4a-4935-b065-f65622b5ea3f",
+])
+def test_link_forms_found_in_simplify_history_are_matched(url):
+    # 244 of 2,383 Oracle links use a hyphenated pod; old SmartRecruiters ids are UUIDs
+    assert any(a.match(url) for a in A.ADAPTERS if a.name in ("oracle", "smartrecruiters"))
+
+
+def test_a_pasted_link_whose_board_we_cannot_track_still_returns_its_jd(monkeypatch):
+    # match() accepts it, but board_of() refuses the dotted site name: this was a 500
+    url = "https://acme.wd5.myworkdayjobs.com/Site.Name/job/US/SWE_R1"
+    r = _paste(monkeypatch, JdSource(text="the jd", source_url=url, adapter="workday"))
+    assert r.status_code == 200 and r.json()["text"] == "the jd" and r.json()["board"] is None
+    assert _companies() == {}

@@ -1,4 +1,6 @@
 import asyncio
+import functools
+import hashlib
 import json
 import os
 import random
@@ -9,6 +11,7 @@ import unicodedata
 from datetime import datetime, timezone, timedelta
 
 import httpx
+from urllib.parse import urlparse
 from email.utils import parsedate_to_datetime
 from sqlalchemy import select, func, delete, or_
 from sqlalchemy.dialects.sqlite import insert
@@ -59,6 +62,70 @@ SEED_COMPANIES = {  # vendors verified live 2026-09-23 (figma is Greenhouse, pla
     "ashby": ["vercel", "notion", "ramp", "plaid", "linear"],
     "greenhouse": ["airbnb", "stripe", "figma", "discord", "anthropic"]
 }
+
+
+def _wd(host: str, *sites: str) -> list[str]:
+    return [f"https://{host}.myworkdayjobs.com/{site}" for site in sites]
+
+
+# T36: the 2026 Fortune 500 tech companies that post on none of the vendors
+# above, every board answered live on 2026-09-24. (provider, slug, name, boards)
+# A slug is the company's own domain name where the vendor's id is cryptic
+# (amat, bah, spgi, cnx), so its logo resolves; boards, not slugs, identify a
+# board, so rediscovery under the vendor's id still dedupes. Upserted each start.
+F500_BOARDS = [
+    ("workday", "nvidia", "NVIDIA", _wd("nvidia.wd5", "NVIDIAExternalCareerSite")),
+    ("workday", "broadcom", "Broadcom", _wd("broadcom.wd1", "External_Career")),
+    ("workday", "cisco", "Cisco", _wd("cisco.wd5", "Cisco_Careers")),
+    ("workday", "hp", "HP", _wd("hp.wd5", "ExternalCareerSite")),
+    ("workday", "intel", "Intel", _wd("intel.wd1", "External")),
+    ("workday", "thermofisher", "Thermo Fisher Scientific", _wd("thermofisher.wd5", "ThermoFisherCareers")),
+    ("workday", "salesforce", "Salesforce",
+     _wd("salesforce.wd12", "External_Career_Site", "Futureforce_NewGradRoles")),
+    ("workday", "visa", "Visa", _wd("visa.wd5", "Visa")),
+    ("workday", "micron", "Micron Technology", _wd("micron.wd1", "External")),
+    ("workday", "hpe", "Hewlett Packard Enterprise", _wd("hpe.wd5", "Jobsathpe", "acjobsite")),
+    ("workday", "mastercard", "Mastercard", _wd("mastercard.wd1", "CorporateCareers", "Campus")),
+    ("workday", "jabil", "Jabil", _wd("jabil.wd5", "Jabil_Careers")),
+    ("workday", "appliedmaterials", "Applied Materials", _wd("amat.wd1", "External")),
+    ("workday", "adobe", "Adobe", _wd("adobe.wd5", "external_experienced")),
+    ("workday", "fiserv", "Fiserv", _wd("fiserv.wd5", "EXT")),
+    ("workday", "leidos", "Leidos", _wd("leidos.wd5", "External")),
+    ("workday", "spglobal", "S&P Global", _wd("spgi.wd5", "SPGI_Careers")),
+    ("workday", "kyndryl", "Kyndryl", _wd("kyndryl.wd5", "KyndrylProfessionalCareers", "KyndrylEarlyCareers")),
+    ("workday", "expedia", "Expedia Group", _wd("expedia.wd108", "search")),
+    ("workday", "kla", "KLA", _wd("kla.wd1", "Search", "UR")),
+    ("workday", "boozallen", "Booz Allen Hamilton", _wd("bah.wd1", "BAH_Jobs")),
+    ("workday", "motorolasolutions", "Motorola Solutions", _wd("motorolasolutions.wd5", "Careers")),
+    ("workday", "ebay", "eBay", _wd("ebay.wd5", "apply")),
+    # "analog" is a live Ashby board; analogdevices.com does not answer, so the tenant id stays
+    ("workday", "analogdevices", "Analog Devices", _wd("analogdevices.wd1", "External")),
+    ("workday", "fisglobal", "FIS", _wd("fis.wd5", "SearchJobs")),
+    ("workday", "globalpayments", "Global Payments", _wd("tsys.wd1", "TSYS")),  # its own tenant 422s
+    ("workday", "workday", "Workday", _wd("workday.wd5", "Workday_Jobs")),
+    ("workday", "qvc", "QVC Group", _wd("qvc.wd5", "QRG")),
+    ("workday", "paloaltonetworks", "Palo Alto Networks", _wd("paloaltonetworks.wd5", "panwexternalcareers")),
+    ("workday", "caci", "CACI", _wd("caci.wd1", "External")),
+    ("workday", "marvell", "Marvell Technology", _wd("marvell.wd1", "MarvellCareers")),
+    ("workday", "kbr", "KBR", _wd("kbr.wd5", "KBR_Careers")),
+    ("workday", "dxc", "DXC Technology", _wd("dxctechnology.wd1", "DXCJobs")),
+    ("workday", "concentrix", "Concentrix", _wd("cnx.wd1", "external_global")),
+    ("workday", "chewy", "Chewy", _wd("chewy.wd5", "External")),
+    ("oracle", "oracle", "Oracle", ["https://eeho.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_45001"]),
+    ("oracle", "dell", "Dell Technologies",  # its Workday tenant 422s
+     ["https://iawmqy.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/careers"]),
+    ("oracle", "ti", "Texas Instruments",
+     ["https://edbz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX"]),
+    ("eightfold", "microsoft", "Microsoft", ["https://apply.careers.microsoft.com/careers?domain=microsoft.com"]),
+    ("eightfold", "qualcomm", "Qualcomm", ["https://qualcomm.eightfold.ai/careers?domain=qualcomm.com"]),
+    ("eightfold", "paypal", "PayPal", ["https://paypal.eightfold.ai/careers?domain=paypal.com"]),
+    ("eightfold", "lamresearch", "Lam Research", ["https://lamresearch.eightfold.ai/careers?domain=lamresearch.com"]),
+    ("smartrecruiters", "servicenow", "ServiceNow", None),
+    ("smartrecruiters", "westerndigital", "Western Digital", None),
+    ("smartrecruiters", "aristanetworks", "Arista Networks", None),
+    ("amazon", "amazon", "Amazon", None),
+    ("apple", "apple", "Apple", None),
+]
 
 # A title names the ROLE first and the TEAM second: "Software Engineer, Sales
 # Platform" is a SWE role, "Account Executive, AI Sales" is not. So the role and
@@ -136,7 +203,11 @@ _HARDWARE = re.compile(
     r"|physical design|design verification|fpga|asic|dfx|dynamics|thermal|power generation"
     r"|bess|solar|launch|recovery|test stand|vacuum|cryogenic|scada|controls?|automation"
     r"|failure analysis|product quality|quality systems|liaison|material flow|technician"
-    r"|body|chassis|manufacturing|electronics|hardware)\b", re.I)
+    r"|body|chassis|manufacturing|electronics|hardware"
+    # T36: chip and defense boards (Workday). Each word's only effect on the 1,475
+    # open titles of 2026-09-24 was to drop one of 27 non-software roles.
+    r"|analog|mixed.?signal|ic|gan|radar|hypersonics?|missiles?|launchers?|munitions|weapons?"
+    r"|space suit|power delivery|process integration|install|layout|satcom|naval)\b", re.I)
 
 
 def _role_segment(title: str) -> str:
@@ -283,26 +354,39 @@ def _classify_unit(unit: str) -> str:
     return "unknown"
 
 
-def is_target_location(location: str | None) -> bool:
-    """US + Canada, any state or city. Any-valid-wins on multi-location postings.
-
-    "New York, NY | London, UK" is a US job also offered in London, so it is KEPT;
-    the old denylist dropped it because London appeared anywhere in the string.
-    Unrecognised text is KEPT: silently deleting a real job is worse than showing
-    one the user can skip past.
-    """
-    if not location:
-        return True
+def _location_units(location: str) -> list[str]:
     # Strip accents first: "Zurich" is in the foreign list but "Zürich" is what
     # Greenhouse actually sends, and the two never matched. Same for Munchen,
     # Krakow, Sao Paulo, Bogota, Malmo. It also lets "Montreal" match directly
     # instead of relying on the word "Canada" happening to be present.
     folded = "".join(c for c in unicodedata.normalize("NFKD", _translit(location))
                      if not unicodedata.combining(c))
-    kinds = {_classify_unit(u) for u in _LOC_UNITS.split(folded) if u.strip()}
-    if "domestic" in kinds:
+    return [u for u in _LOC_UNITS.split(folded) if u.strip()]
+
+
+def location_kinds(location: str) -> set[str]:
+    return {_classify_unit(u) for u in _location_units(location)}
+
+
+def is_target_location(location: str | None, country: str | None = None) -> bool:
+    """US + Canada, any state or city. Any-valid-wins on multi-location postings.
+
+    "New York, NY | London, UK" is a US job also offered in London, so it is KEPT;
+    the old denylist dropped it because London appeared anywhere in the string.
+    Unrecognised text is KEPT: silently deleting a real job is worse than showing
+    one the user can skip past - unless the vendor states the primary location's
+    `country` (ISO alpha-2, T36), which settles it: "TUN - ARIANA" is Tunisia.
+    """
+    if country in ("US", "CA"):
         return True
-    return "foreign" not in kinds
+    units = _location_units(location) if location else []
+    if country is not None:
+        # The stated country is the first unit's (both vendors list the primary
+        # first), so only the others can still be domestic: "Tunis, TN" is not
+        # Tennessee when the vendor says TN, Tunisia.
+        return any(_classify_unit(u) == "domestic" for u in units[1:])
+    kinds = {_classify_unit(u) for u in units}
+    return "domestic" in kinds or "foreign" not in kinds
 
 
 # Missing/invalid dates must never become now(). The stable sentinel makes them
@@ -389,11 +473,28 @@ async def _get_board(provider: str, slug: str, client=None) -> list | dict | obj
     if client is None:  # a lane passes its own, reused connection (T30)
         async with httpx.AsyncClient(timeout=BOARD_TIMEOUT) as own:
             return await _get_board(provider, slug, own)
+    body = await _download(client, url, etag_key=(provider, slug))
+    return body if body is None or body is NOT_MODIFIED else json.loads(body)
+
+
+async def _download(client, url: str, *, etag_key=None, body: dict | None = None,
+                    gone: tuple[int, ...] = (404,)) -> bytes | object | None:
+    """One vendor request: the body, None when the board is gone, or NOT_MODIFIED.
+    A JSON `body` makes it a POST (Workday). Raises RateLimited on 429/403 and
+    HTTPStatusError on anything else."""
     headers = {"User-Agent": USER_AGENT}
-    if (provider, slug) in _ETAGS:
-        headers["If-None-Match"] = _ETAGS[(provider, slug)]
-    async with client.stream("GET", url, headers=headers) as resp:
-        if resp.status_code == 404:
+    if etag_key in _ETAGS:
+        headers["If-None-Match"] = _ETAGS[etag_key]
+    post = {"json": body} if body is not None else {}
+    async with client.stream("POST" if post else "GET", url, headers=headers, **post) as resp:
+        if resp.status_code == 403 and 403 in gone:
+            # Workday answers a private or closed site with its own JSON error
+            # (S22 "permission denied", verified); a CDN challenge is HTML.
+            head = await anext(resp.aiter_bytes(), b"")  # only the start: an error body has no size cap
+            if head.lstrip().startswith(b"{"):
+                return None
+            raise RateLimited(_retry_after_seconds(resp))
+        if resp.status_code in gone:
             return None
         if resp.status_code == 304:  # before raise_for_status: httpx raises on 3xx
             return NOT_MODIFIED
@@ -404,10 +505,11 @@ async def _get_board(provider: str, slug: str, client=None) -> list | dict | obj
         async for chunk in resp.aiter_bytes():
             total += len(chunk)
             if total > BOARD_MAX_BYTES:
-                raise ValueError(f"{provider}/{slug}: board exceeds {BOARD_MAX_BYTES} bytes")
+                raise ValueError(f"{url}: board exceeds {BOARD_MAX_BYTES} bytes")
             chunks.append(chunk)
-        _UNCOMMITTED_ETAGS[(provider, slug)] = resp.headers.get("etag")
-    return json.loads(b"".join(chunks))
+        if etag_key is not None:
+            _UNCOMMITTED_ETAGS[etag_key] = resp.headers.get("etag")
+    return b"".join(chunks)
 
 
 async def fetch_ashby(slug: str, client=None) -> list[dict] | object | None:
@@ -469,19 +571,407 @@ async def fetch_lever(slug: str, client=None) -> list[dict] | object | None:
     ]
 
 
+# T36: paged vendors. Those boards come in pages, often with no ETag, so a
+# change check and a paging loop stand in for the one conditional GET above.
+# Seconds between one board's pages; default 1. Eightfold 429s ~20-25% of
+# requests whatever the pace (4/10 at 3 s, 10/50 at 6 s, 12/50 at 12 s), so a
+# longer gap buys nothing: 6 s had the lowest rate, retries absorb the rest.
+PAGE_GAP = {"eightfold": 6.0}
+PAGE_RETRIES = (15, 30, 60)     # a mid-sweep 429 retries the page, it does not drop the board
+
+
+class Partial(list):
+    """Jobs from a board read only in part (a vendor's page cap). What is missing
+    may be past the cap rather than closed, so sync closes nothing."""
+
+
+def _page_of(data, key: str, ident: str) -> list[dict]:
+    """A missing/malformed page is not evidence that postings closed."""
+    items = data.get(key) if isinstance(data, dict) else None
+    if not isinstance(items, list) or any(
+            not isinstance(i, dict) or i.get(ident) is None or not str(i[ident]).strip() for i in items):
+        raise ValueError(f"invalid board page: expected {key} with {ident}")
+    return items
+
+
+def _total(value) -> int:
+    """A page's total, validated: a malformed one is the vendor's fault (a
+    BoardVendorError), not a TypeError blamed on our code."""
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"invalid board total: {value!r}")
+    return value
+
+
+async def _page(provider: str, fetch, *args):
+    """One request of a many-page read, retried on a 429 or a transient failure
+    (a timeout, a dropped connection, a 5xx): one blip used to throw away a
+    whole read - a single ReadTimeout failed Micron's 100 pages."""
+    for wait in PAGE_RETRIES:
+        try:
+            return await fetch(*args)
+        except RateLimited as e:
+            wait = min(e.retry_after, wait)
+        except (httpx.TransportError, httpx.HTTPStatusError) as e:
+            if isinstance(e, httpx.HTTPStatusError) and e.response.status_code < 500:
+                raise
+        print(f"[board] {provider} request failed mid-board, retrying in {wait:.0f}s")
+        await asyncio.sleep(wait)
+    return await fetch(*args)
+
+
+async def _read_board(provider: str, fetch_page, first, *, size: int, cap: int | None = None,
+                      stale=None) -> tuple[list[dict], bool]:
+    """Every page after `first` (items, total), in order. fetch_page(offset)
+    returns (items, _). Stops at total, an empty page, the vendor's cap, or -
+    only where the server sorts newest first - a page reaching past 14 days.
+    Never asks past total: Workday wraps such offsets back to page 1.
+    Returns (items, complete)."""
+    items, total = first
+    out, offset = list(items), size
+    end = total if cap is None else min(total, cap)
+    while items and offset < end and not (stale and any(map(stale, items))):
+        await asyncio.sleep(PAGE_GAP.get(provider, 1.0))
+        items, _ = await _page(provider, fetch_page, offset)
+        out += items
+        offset += size
+    stopped_stale = bool(stale and items and any(map(stale, items)))
+    # A posting closing mid-read shifts every later one up a place, so a live one
+    # can slip past a page edge unseen: fewer items than the total means the
+    # read cannot prove absence. (Full reads matched it: Adobe 582, Fiserv 356.)
+    return out, (cap is None or total < cap) and (stopped_stale or len(out) >= end)
+
+
+async def _first_pages(provider: str, slug: str, page, queries: list[tuple], ident: str):
+    """Page 1 of each query (a site, a country...), skipping gone ones: None when
+    all are gone, NOT_MODIFIED when nothing changed, else {query: (items, total)}.
+    No ETag at these vendors, so page 1 stands in for one: each query's total
+    plus its posting ids. A new posting changes page 1 or a total; a removal
+    changes a total. ponytail: an add and a removal outside page 1 in the same
+    interval go unseen until the board next changes."""
+    firsts = {}
+    for i, query in enumerate(queries):
+        if i:
+            await asyncio.sleep(PAGE_GAP.get(provider, 1.0))
+        if (first := await _page(provider, page, *query, 0)) is not None:
+            firsts[query] = first
+    if not firsts:
+        return None
+    seen = [(query, total, [item[ident] for item in items]) for query, (items, total) in firsts.items()]
+    fingerprint = hashlib.sha256(json.dumps(seen, default=str).encode()).hexdigest()
+    _UNCOMMITTED_ETAGS[(provider, slug)] = fingerprint
+    return NOT_MODIFIED if _ETAGS.get((provider, slug)) == fingerprint else firsts
+
+
+def _days_ago(days: int | None) -> str | None:
+    """Date-only vendors: N days back from now; N=0 is the moment we first saw it.
+    sync never overwrites it later (DATE_ONLY), so a posting keeps that stamp."""
+    return None if days is None else (board_policy.utcnow() - timedelta(days=max(days, 0))).isoformat()
+
+
+def _age_days(day: str | None, fmt: str = "%Y-%m-%d") -> int | None:
+    try:
+        return (board_policy.utcnow().date() - datetime.strptime(day, fmt).date()).days
+    except (TypeError, ValueError):
+        return None
+
+
+def _alpha2(code) -> str | None:
+    """A vendor-stated ISO country (Oracle "US", SmartRecruiters "us"), for is_target_location."""
+    return code.upper() if isinstance(code, str) and re.fullmatch(r"[A-Za-z]{2}", code) else None
+
+
+def _older_than_window(when: datetime | None) -> bool:
+    return when is not None and when <= board_policy.utcnow() - board_policy.MAX_AGE
+
+
+# Every relative form seen in 30k postings (2026-09-24). "30+ Days Ago" is a
+# lower bound, not a date, so it stays undated (and ineligible).
+_WORKDAY_POSTED = re.compile(r"Posted (Today|Yesterday|(\d+) Days? Ago)")
+_N_LOCATIONS = re.compile(r"\d+ Locations")
+# 404, 422 (not on that wdN host) and a JSON 403 (S22, a private site) all mean gone
+WORKDAY_GONE = (403, 404, 422)
+_WORKDAY_DETAILS: dict[str, tuple] = {}  # job URL -> (locations, country, start date), from the detail call
+
+
+def workday_days(posted_on) -> int | None:
+    m = _WORKDAY_POSTED.fullmatch(posted_on) if isinstance(posted_on, str) else None
+    if not m:
+        return None
+    return {"Today": 0, "Yesterday": 1}.get(m.group(1)) if m.group(2) is None else int(m.group(2))
+
+
+async def _workday_detail(client, wd, url: str) -> tuple[str | None, str | None, str | None]:
+    """(every location, the primary one's ISO country, the posting date) from the
+    detail call. A list row may say only "4 Locations", or a code like "TUN -
+    ARIANA" or "SGP Work-at-Home" that no location rule can read; the detail
+    names them all and states the primary country (verified on 5 tenants). And
+    6 of 315 sites send no readable postedOn at all; the detail has startDate."""
+    if url not in _WORKDAY_DETAILS:
+        await asyncio.sleep(PAGE_GAP.get("workday", 1.0))
+        body = await _page("workday", functools.partial(_download, gone=WORKDAY_GONE), client, wd.api_url(url))
+        info = jd_adapters.object_field(json.loads(body), "jobPostingInfo") if body else {}
+        places = [info.get("location"), *(info.get("additionalLocations") or [])]
+        country = jd_adapters.object_field(jd_adapters.object_field(info, "jobRequisitionLocation"),
+                                           "country").get("alpha2Code")
+        start = info.get("startDate")
+        _WORKDAY_DETAILS[url] = (" | ".join(p for p in places if isinstance(p, str) and p.strip()) or None,
+                                 country if isinstance(country, str) and country else None,
+                                 start if isinstance(start, str) else None)
+    return _WORKDAY_DETAILS[url]
+
+
+async def fetch_workday(slug: str, client, boards: list[str]) -> list[dict] | object | None:
+    """All of a company's Workday sites, merged. Their order is set per company
+    and is not by date (stopping at the first stale page lost 529 of Cisco's 570
+    fresh jobs), so a changed board is read to its end - which Workday caps at
+    2000 (26 of 306 sites)."""
+    wd = jd_adapters.by_name("workday")
+
+    async def page(board: str, offset: int):
+        url, body = wd.list_request(board, offset)
+        data = await _download(client, url, body=body, gone=WORKDAY_GONE)
+        if data is None:
+            if offset:
+                raise ValueError(f"workday {board} vanished mid-read")
+            return None  # 404/422/403-S22: this site is gone
+        data = json.loads(data)
+        jobs = data.get("jobPostings") if isinstance(data, dict) else None
+        if not isinstance(jobs, list) or any(not isinstance(j, dict) for j in jobs):
+            raise ValueError("invalid workday board: expected jobPostings")
+        # Adobe lists a row with only bulletFields (2026-09-24): skipped, and the
+        # read then falls short of its total, so nothing is closed on it.
+        jobs = [j for j in jobs if isinstance(j.get("externalPath"), str) and j["externalPath"].strip()]
+        return jobs, _total(data.get("total"))  # page 1 only
+
+    firsts = await _first_pages("workday", slug, page, [(b,) for b in boards], "externalPath")
+    if firsts is None or firsts is NOT_MODIFIED:
+        return firsts
+    jobs, complete, seen = [], True, set()
+    for (board,), first in firsts.items():
+        items, whole = await _read_board("workday", functools.partial(page, board), first,
+                                         size=wd.PAGE, cap=wd.CAP)
+        complete = complete and whole
+        for job in items:
+            if job["externalPath"] in seen:  # one job listed on two of the company's sites
+                continue
+            seen.add(job["externalPath"])
+            url, location = wd.job_url(board, job["externalPath"]), job.get("locationsText")
+            posted = job.get("postedOn")
+            days, country = workday_days(posted), None
+            undated = not (isinstance(posted, str) and posted.startswith("Posted "))
+            unreadable = isinstance(location, str) and (
+                _N_LOCATIONS.fullmatch(location) or location_kinds(location) == {"unknown"})
+            if (isinstance(job.get("title"), str) and is_target_role(job["title"])
+                    and (undated or (unreadable and days is not None and days < board_policy.MAX_AGE.days))):
+                named, country, start = await _workday_detail(client, wd, url)
+                location = named or location
+                if undated:
+                    days = _age_days(start)
+            jobs.append({"title": job.get("title"), "location": location, "url": url,
+                         "published_at": _days_ago(days), "country": country})
+    return jobs if complete else Partial(jobs)
+
+
+MAX_CONFIRM = 50  # detail calls per sync; ponytail: the rest are confirmed on the next one
+
+
+async def _confirmed_gone(db, company: TrackedCompany, jobs: list[dict], client) -> set[str]:
+    """A partial read (a cap, ghost rows, postings closing mid-read - Cisco read
+    short on every try) cannot prove a posting gone by its absence, so ask the
+    vendor about each stored one it did not see. Workday answers a closed job
+    with a JSON 403 S22 (9 of 10 closed postings). Runs before sync writes, so
+    no SQLite write lock is held across these requests."""
+    if company.provider != "workday":
+        return set()
+    with db.no_autoflush:
+        stored = db.scalars(select(JobPosting.url).where(
+            JobPosting.company_slug == company.slug, JobPosting.status == "open")).all()
+    seen, wd, gone = {job.get("url") for job in jobs}, jd_adapters.by_name("workday"), set()
+    for url in [u for u in stored if u not in seen][:MAX_CONFIRM]:
+        await asyncio.sleep(PAGE_GAP.get("workday", 1.0))
+        detail = functools.partial(_download, gone=WORKDAY_GONE)
+        if await _page("workday", detail, client, wd.api_url(url)) is None:
+            gone.add(url)
+    return gone
+
+
+async def fetch_oracle(slug: str, client, boards: list[str]) -> list[dict] | object | None:
+    """Oracle sorts newest first on the server (0 inversions in full reads of
+    all 3 boards, 3,462 postings), so reading stops past 14 days."""
+    orc = jd_adapters.by_name("oracle")
+
+    async def page(board: str, offset: int):
+        data = await _download(client, orc.list_url(board, offset))
+        if data is None:
+            if offset:
+                raise ValueError(f"oracle {board} vanished mid-read")
+            return None
+        search = _page_of(json.loads(data), "items", "SearchId")
+        if len(search) != 1:
+            raise ValueError("invalid oracle board: expected one search")
+        return _page_of(search[0], "requisitionList", "Id"), _total(search[0].get("TotalJobsCount"))
+
+    def stale(req: dict) -> bool:
+        days = _age_days(req.get("PostedDate"))
+        return days is not None and days >= board_policy.MAX_AGE.days
+
+    firsts = await _first_pages("oracle", slug, page, [(b,) for b in boards], "Id")
+    if firsts is None or firsts is NOT_MODIFIED:
+        return firsts
+    jobs = []
+    for (board,), first in firsts.items():
+        items, _ = await _read_board("oracle", functools.partial(page, board), first, size=orc.PAGE, stale=stale)
+        for req in items:
+            places = [req.get("PrimaryLocation"), *(loc.get("Name") for loc in req.get("secondaryLocations") or []
+                                                    if isinstance(loc, dict))]
+            jobs.append({"title": req.get("Title"), "url": orc.job_url(board, req["Id"]),
+                         "location": " | ".join(p for p in places if isinstance(p, str) and p.strip()) or None,
+                         "published_at": _days_ago(_age_days(req.get("PostedDate"))),
+                         "country": _alpha2(req.get("PrimaryLocationCountry"))})
+    return jobs
+
+
+async def fetch_smartrecruiters(slug: str, client=None) -> list[dict] | object | None:
+    """Newest first (0 inversions in full reads of all 3 boards, 1,271 postings).
+    An unknown company is a 200 with no postings, never a 404 (verified)."""
+    sr = jd_adapters.by_name("smartrecruiters")
+
+    async def page(offset: int):
+        data = await _download(client, sr.list_url(slug, offset))
+        if data is None:
+            raise ValueError(f"smartrecruiters/{slug} vanished mid-read")
+        data = json.loads(data)
+        return _page_of(data, "content", "id"), _total(data.get("totalFound"))
+
+    firsts = await _first_pages("smartrecruiters", slug, page, [()], "id")
+    if firsts is NOT_MODIFIED:
+        return firsts
+    items, _ = await _read_board("smartrecruiters", page, firsts[()], size=sr.PAGE,
+                                 stale=lambda j: _older_than_window(jd_adapters.parse_ats_date(j.get("releasedDate"))))
+    return [{"title": j.get("name"),
+             "location": jd_adapters.object_field(j, "location").get("fullLocation"),
+             "country": _alpha2(jd_adapters.object_field(j, "location").get("country")),  # "us"
+             "url": sr.job_url(jd_adapters.object_field(j, "company").get("identifier") or slug, j["id"]),
+             "published_at": j.get("releasedDate")} for j in items]
+
+
+async def fetch_eightfold(slug: str, client, boards: list[str]) -> list[dict] | object | None:
+    """US and Canada only (Microsoft 2,432 -> 1,233 for the US). Not strictly
+    newest first, so every page is read. Eightfold 429s often (see PAGE_GAP),
+    so every page retries."""
+    ef = jd_adapters.by_name("eightfold")
+    queries = [(board, place) for board in boards for place in ("United States", "Canada")]
+
+    async def page(board: str, place: str, start: int):
+        data = await _download(client, ef.list_url(board, place, start))
+        if data is None:
+            if start:
+                raise ValueError(f"eightfold {board} vanished mid-read")
+            return None
+        data = jd_adapters.object_field(json.loads(data), "data")
+        return _page_of(data, "positions", "id"), _total(data.get("count"))
+
+    firsts = await _first_pages("eightfold", slug, page, queries, "id")
+    if firsts is None or firsts is NOT_MODIFIED:
+        return firsts
+    jobs, seen = [], set()
+    for (board, place), first in firsts.items():
+        items, _ = await _read_board("eightfold", functools.partial(page, board, place), first, size=ef.PAGE)
+        for p in items:
+            if p["id"] in seen:  # a job in both countries
+                continue
+            seen.add(p["id"])
+            locations = [x for x in p.get("locations") or [] if isinstance(x, str)]
+            jobs.append({"title": p.get("name"), "location": " | ".join(locations) or None,
+                         "url": ef.job_url(board, p["id"]),
+                         "published_at": jd_adapters.epoch_seconds(p.get("postedTs"))})
+    return jobs
+
+
+AMAZON_CAP = 10_000  # `hits` of an unfiltered search stops here
+
+
+async def fetch_amazon(slug: str, client=None) -> list[dict] | object | None:
+    """Software development roles in the US and Canada (1,751 in the US on
+    2026-09-24). `sort=recent` is not strictly by date, so every page is read."""
+    amz = jd_adapters.by_name("amazon")
+
+    async def page(country: str, offset: int):
+        data = await _download(client, amz.list_url(country, offset))
+        if data is None:
+            raise ValueError(f"amazon {country} search is gone")
+        data = json.loads(data)
+        return _page_of(data, "jobs", "job_path"), _total(data.get("hits"))
+
+    firsts = await _first_pages("amazon", slug, page, [("USA",), ("CAN",)], "job_path")
+    if firsts is NOT_MODIFIED:
+        return firsts
+    jobs, complete = [], True
+    for (country,), first in firsts.items():
+        items, whole = await _read_board("amazon", functools.partial(page, country), first,
+                                         size=amz.PAGE, cap=AMAZON_CAP)
+        complete = complete and whole
+        jobs += [{"title": j.get("title"), "location": j.get("normalized_location") or j.get("location"),
+                  "url": amz.job_url(j["job_path"]),
+                  "published_at": _days_ago(_age_days(j.get("posted_date"), "%B %d, %Y"))} for j in items]
+    return jobs if complete else Partial(jobs)
+
+
+async def fetch_apple(slug: str, client=None) -> list[dict] | object | None:
+    """Newest first on the server (0 inversions in a full read of all 4,574 US
+    postings), so reading stops past 14 days: ~37 of 229 pages. Data comes
+    embedded in the search page's HTML."""
+    apple = jd_adapters.by_name("apple")
+
+    async def page(location: str, offset: int):
+        data = await _download(client, apple.list_url(location, offset // apple.PAGE + 1))
+        if data is None:
+            raise ValueError(f"apple {location} search is gone")
+        search = jd_adapters.object_field(jd_adapters.apple_data(data.decode("utf-8", "replace")), "search")
+        return _page_of(search, "searchResults", "positionId"), _total(search.get("totalRecords"))
+
+    # both verified: Apple echoes the location filter back
+    firsts = await _first_pages("apple", slug, page, [("united-states-USA",), ("canada-CANC",)], "positionId")
+    if firsts is NOT_MODIFIED:
+        return firsts
+    jobs = []
+    for (location,), first in firsts.items():
+        items, _ = await _read_board(
+            "apple", functools.partial(page, location), first, size=apple.PAGE,
+            stale=lambda j: _older_than_window(jd_adapters.parse_ats_date(j.get("postDateInGMT"))))
+        jobs += [{"title": j.get("postingTitle"), "location": jd_adapters.apple_location(j.get("locations")),
+                  "url": apple.job_url(j["positionId"]), "published_at": j.get("postDateInGMT")} for j in items]
+    return jobs
+
+
 class BoardVendorError(Exception):
     """The vendor's board could not be fetched or parsed. Expected noise, not a
     bug in our code - the distinction is the whole point of this exception."""
 
 
-FETCHERS = {"ashby": fetch_ashby, "greenhouse": fetch_greenhouse, "lever": fetch_lever}
+FETCHERS = {"ashby": fetch_ashby, "greenhouse": fetch_greenhouse, "lever": fetch_lever,
+            "workday": fetch_workday, "oracle": fetch_oracle, "smartrecruiters": fetch_smartrecruiters,
+            "eightfold": fetch_eightfold, "amazon": fetch_amazon, "apple": fetch_apple}
+NEEDS_BOARDS = {"workday", "oracle", "eightfold"}  # a slug alone does not locate these
+# Only these 404 a slug they do not host, which is what makes the move check
+# sound; SmartRecruiters answers 200 for any slug (verified), the rest need boards.
+MOVABLE = ("greenhouse", "lever", "ashby")
+# Vendors that give only a date: their first-seen stamp is kept, never recomputed.
+DATE_ONLY = {"workday", "oracle", "amazon"}
+WORKERS = {"workday": 3}  # 8,833 pages if all ~315 sites changed: 2.5-3.7 h on one lane
 
 
-async def _fetch(provider: str, slug: str, client=None):
+async def _fetch(provider: str, slug: str, client=None, boards: list[str] | None = None):
     fetch = FETCHERS.get(provider)
     if fetch is None:
         raise BoardVendorError(f"unknown provider {provider!r}")
     try:
+        if provider in NEEDS_BOARDS:
+            if not boards:
+                raise ValueError("no board URL recorded")
+            return await fetch(slug, client, boards)
         return await fetch(slug, client)
     except (httpx.HTTPError, ValueError) as e:
         # the type too: an httpx timeout's message is often empty (T30: 6 blank log lines)
@@ -494,7 +984,7 @@ async def _find_moved_board(company: TrackedCompany, client=None) -> list[dict] 
     two. All three vendors 404 a slug they do not host, so a 200 is evidence.
     ponytail: same slug is taken as same company; the vendors expose no stronger
     identity. Worst case is a real board of a same-named company."""
-    for provider in FETCHERS:
+    for provider in MOVABLE:
         if provider == company.provider:
             continue
         _ETAGS.pop((provider, company.slug), None)  # a 304 here would carry no jobs
@@ -514,9 +1004,12 @@ async def sync_company_jobs(db, company: TrackedCompany, client=None) -> int | N
     when the board is unchanged since its last committed sync (304).
     Raise BoardVendorError/RateLimited for vendor failures; let code bugs propagate.
     """
-    raw_jobs = await _fetch(company.provider, company.slug, client)
-    if raw_jobs is None:
+    raw_jobs = await _fetch(company.provider, company.slug, client, company.boards)
+    if raw_jobs is None and company.provider in MOVABLE:
+        # Not for a board-URL vendor: a Workday outage would read as a move to
+        # whatever same-named board another vendor happens to host.
         raw_jobs = await _find_moved_board(company, client)
+    gone = await _confirmed_gone(db, company, raw_jobs, client) if isinstance(raw_jobs, Partial) else set()
 
     now = board_policy.utcnow()
     company.last_synced_at = now
@@ -542,7 +1035,7 @@ async def sync_company_jobs(db, company: TrackedCompany, client=None) -> int | N
     for job in raw_jobs:
         if not job.get("title") or not job.get("url"):
             continue
-        matches = is_target_role(job["title"]) and is_target_location(job["location"])
+        matches = is_target_role(job["title"]) and is_target_location(job["location"], job.get("country"))
         lists_target = lists_target or matches
         posted_dt = parse_ats_date(job.get("published_at"))
         if not board_policy.is_recent(posted_dt, now):
@@ -555,10 +1048,13 @@ async def sync_company_jobs(db, company: TrackedCompany, client=None) -> int | N
         active_urls.append(job["url"])
         fields = {"title": job["title"], "location": job["location"],
                   "status": "open", "created_at": posted_dt, "updated_at": now}
+        # A date-only vendor's stamp was fixed when we first saw the posting.
+        kept = {k: v for k, v in fields.items() if k != "created_at"} \
+            if company.provider in DATE_ONLY else fields
         db.execute(
             insert(JobPosting)
             .values(url=job["url"], company_slug=company.slug, **fields)
-            .on_conflict_do_update(index_elements=["url"], set_=fields)
+            .on_conflict_do_update(index_elements=["url"], set_=kept)
         )
 
     # Batch expired rows without exceeding older SQLite parameter limits.
@@ -575,8 +1071,14 @@ async def sync_company_jobs(db, company: TrackedCompany, client=None) -> int | N
         .where(JobPosting.status != "closed")
         .values(status="closed", updated_at=now)
     )
-    if active_urls:
-        closing = closing.where(JobPosting.url.not_in(active_urls))
+    keep = set(active_urls)
+    if isinstance(raw_jobs, Partial):
+        # Absence proves nothing here: close only what was seen but no longer
+        # matches, and what the vendor confirmed gone.
+        seen = {job.get("url") for job in raw_jobs}
+        keep |= {url for url in was_open if url not in seen and url not in gone}
+    if keep:
+        closing = closing.where(JobPosting.url.not_in(keep))
     db.execute(closing)
 
     _reschedule(company, now, lists_target=lists_target, new_jobs=len(set(active_urls) - was_open))
@@ -709,7 +1211,8 @@ async def _harvest_cycle() -> dict:
     stats = _new_stats()
     with _db.SessionLocal() as db:
         seed_db_if_empty(db)
-    await asyncio.gather(*(_vendor_worker(provider, stats, drain=True) for provider in FETCHERS))
+        track_f500(db)
+    await asyncio.gather(*(_vendor_worker(provider, stats, drain=True) for provider in _lanes()))
     # Whole-feed check only: one quiet vendor window keeping nothing is normal now
     # that most tracked boards list none of our roles (T31).
     if stats["companies"] and not stats["kept"] and not stats["unchanged"]:
@@ -728,10 +1231,18 @@ async def _worker_forever(provider: str) -> None:
             await asyncio.sleep(WORKER_IDLE)
 
 
+def _lanes() -> list[str]:
+    """One worker per vendor, more where one cannot keep up (WORKERS). Safe:
+    a worker books its board (select, set next_check_at, commit) with no await
+    in between, so two workers of one vendor never pick the same board."""
+    return [provider for provider in FETCHERS for _ in range(WORKERS.get(provider, 1))]
+
+
 async def harvester_loop():
     with _db.SessionLocal() as db:
         seed_db_if_empty(db)
-    await asyncio.gather(*(_worker_forever(provider) for provider in FETCHERS))
+        track_f500(db)
+    await asyncio.gather(*(_worker_forever(provider) for provider in _lanes()))
 
 
 def claim_background_lock():
@@ -775,7 +1286,10 @@ _DISCOVERY_PATTERNS = {
     "greenhouse": re.compile(r"boards\.greenhouse\.io/([a-zA-Z0-9_.-]+)"),
     "ashby": re.compile(r"jobs\.ashbyhq\.com/([a-zA-Z0-9_.-]+)"),
     "lever": re.compile(r"jobs\.lever\.co/([a-zA-Z0-9_.-]+)"),
+    # a job id must follow the company: the oneclick-ui/... paths are not companies
+    "smartrecruiters": re.compile(r"jobs\.smartrecruiters\.com/([a-zA-Z0-9_-]+)/\d"),
 }
+_URL = re.compile(r"https?://[^\s\"'<>]+")
 
 # SimplifyJobs' new-grad list: several commits a day (verified 2026-09-23), and
 # exactly our band. It replaced awesome-easy-apply, frozen since May 2024 and the
@@ -789,7 +1303,8 @@ SIMPLIFY_LISTINGS = ("https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Po
 # page 2+ and the tbs time filter both fell back to YouTube/Reddit results), so
 # reach comes from rotating the phrase daily, not from paging. Page 1 of the
 # old fixed query found 0 untracked companies; a rotated phrase found 9.
-SERPER_SITES = ("boards.greenhouse.io", "job-boards.greenhouse.io", "jobs.ashbyhq.com", "jobs.lever.co")
+SERPER_SITES = ("boards.greenhouse.io", "job-boards.greenhouse.io", "jobs.ashbyhq.com", "jobs.lever.co",
+                "myworkdayjobs.com")
 SERPER_PHRASES = ("software engineer", "backend engineer", "new grad software engineer",
                   "machine learning engineer", "infrastructure engineer", "full stack engineer",
                   "data engineer")
@@ -831,7 +1346,39 @@ def discover_slugs(text: str) -> list[tuple[str, str]]:
     return found
 
 
-def track_company(db, provider: str, slug: str, source: str, first_check_at: datetime | None = None) -> bool:
+def _board_key(url: str) -> str:
+    return url.lower().rstrip("/")  # Workday site names are case-insensitive (verified)
+
+
+def _board_host(url: str) -> str:
+    return (urlparse(url).hostname or "").lower()
+
+
+def _board_owner(db, provider: str, boards: list[str]) -> TrackedCompany | None:
+    """The company already harvesting boards on this host. The host, not the
+    slug, is the company: a Workday tenant, an Oracle pod, an Eightfold host
+    (the curated slug "appliedmaterials" is Workday tenant amat).
+    ponytail: scans the provider's rows; hundreds today, index hosts if thousands."""
+    wanted = {_board_host(b) for b in boards}
+    return next((c for c in db.scalars(select(TrackedCompany).where(
+        TrackedCompany.provider == provider, TrackedCompany.boards.is_not(None)))
+        if wanted & {_board_host(b) for b in c.boards}), None)
+
+
+def discover_boards(text: str) -> list[tuple[str, str, str]]:
+    """(provider, slug, board URL) for the vendors a slug cannot locate (T36):
+    Workday sites and Oracle career sites. Each adapter validates its own host,
+    so nothing outside the vendor's domain can become a board to fetch."""
+    found = {}
+    for url in _URL.findall(text):
+        for provider in ("workday", "oracle"):
+            if hit := jd_adapters.by_name(provider).board_of(url):
+                found.setdefault(_board_key(hit[1]), (provider, *hit))
+    return list(found.values())
+
+
+def track_company(db, provider: str, slug: str, source: str, first_check_at: datetime | None = None,
+                  boards: list[str] | None = None, name: str | None = None) -> bool:
     """do_nothing, not do_update: the old version overwrote `provider` on every
     sighting, so a company listed under two ATSes flip-flopped and orphaned the
     postings harvested under the other one. A genuine ATS migration is handled
@@ -839,20 +1386,50 @@ def track_company(db, provider: str, slug: str, source: str, first_check_at: dat
     (T29 - 103 migrations had gone unnoticed). Returns True only when new."""
     if not _SLUG_OK.fullmatch(slug):
         raise ValueError(f"refusing suspicious board slug: {slug!r}")
-    if source == "pasted":
-        existing = db.get(TrackedCompany, slug)
-        if existing is not None:
-            # The ATS API just answered for this link, so a board exists. Harvest
-            # it on the next pass instead of waiting out the interval or a park.
-            # Provider is NOT flipped (T28): if the recorded board 404s, the
-            # harvester's re-resolve finds this one; if it is live, it stays.
-            existing.gone_at, existing.last_synced_at, existing.next_check_at = None, None, None
-            return False
-    return db.execute(
-        insert(TrackedCompany)
-        .values(slug=slug, provider=provider, discovery_source=source, next_check_at=first_check_at)
-        .on_conflict_do_nothing(index_elements=["slug"])
-    ).rowcount == 1
+    company = (_board_owner(db, provider, boards) if boards else None) or db.get(TrackedCompany, slug)
+    if company is None:
+        return db.execute(
+            insert(TrackedCompany)
+            .values(slug=slug, provider=provider, discovery_source=source, next_check_at=first_check_at,
+                    boards=boards, name=name)
+            .on_conflict_do_nothing(index_elements=["slug"])
+        ).rowcount == 1
+    # The move check can never find a board that needs more than a slug, so a
+    # parked row under this slug is taken over here instead (T36) - unless it is
+    # curated: a hand-verified company is never re-pointed by a discovered link.
+    adopted = (company.provider != provider and company.gone_at is not None and provider not in MOVABLE
+               and company.discovery_source != "fortune500")
+    if adopted:
+        print(f"[board] {slug} parked on {company.provider}, now tracked on {provider}")
+        company.provider, company.boards, company.discovery_source = provider, None, source
+    if company.provider == provider:
+        have = {_board_key(b) for b in company.boards or []}
+        extra = [b for b in boards or [] if _board_key(b) not in have]
+        if extra:  # another of the company's sites, e.g. its new-grad one
+            company.boards = [*(company.boards or []), *extra]
+        company.name = company.name or name
+    elif company.discovery_source == "fortune500":
+        # A curated company's vendor was chosen and verified: PayPal is on Eightfold,
+        # and its old Workday site lists the same jobs (279 vs 276) - never twice.
+        print(f"[board] {provider} {boards[0] if boards else slug} skipped: {slug} is curated on {company.provider}")
+    elif boards and not slug.endswith(f".{provider}"):
+        # A live board of another vendor holds this slug: a same-named, different
+        # company (all 5 seen: costar on Greenhouse is Co-Star, the Workday tenant
+        # CoStar Group). Track this one apart; its host still dedupes it later.
+        return track_company(db, provider, f"{slug}.{provider}", source, first_check_at, boards, name)
+    if source == "pasted" or adopted:
+        # The ATS API just answered for this link, so a board exists. Harvest
+        # it on the next pass instead of waiting out the interval or a park.
+        # Provider is NOT flipped for a slug-located vendor (T28): if the
+        # recorded board 404s, the harvester's re-resolve finds this one.
+        company.gone_at, company.last_synced_at, company.next_check_at = None, None, None
+    return adopted
+
+
+def track_f500(db) -> None:
+    for provider, slug, name, boards in F500_BOARDS:
+        track_company(db, provider, slug, "fortune500", boards=boards, name=name)
+    db.commit()
 
 
 async def _scout_github(client, db) -> int:
@@ -869,9 +1446,18 @@ async def _scout_github(client, db) -> int:
     if not isinstance(listings, list):
         print("[scout] listings.json is not a list")
         return 0
-    urls = " ".join(str(item.get("url") or "") for item in listings
-                    if isinstance(item, dict) and item.get("active") is True)
-    added = sum(track_company(db, provider, slug, "simplify") for provider, slug in discover_slugs(urls))
+    found = {}  # one entry per board: a company has many listings
+    for item in listings:
+        if not isinstance(item, dict) or item.get("active") is not True:
+            continue
+        url, name = str(item.get("url") or ""), item.get("company_name")
+        name = name.strip() or None if isinstance(name, str) else None
+        for provider, slug in discover_slugs(url):
+            found.setdefault((provider, slug), (provider, slug, None, name))
+        for provider, slug, board in discover_boards(url):
+            found.setdefault(_board_key(board), (provider, slug, board, name))
+    added = sum(track_company(db, provider, slug, "simplify", boards=board and [board], name=name)
+                for provider, slug, board, name in found.values())
     db.commit()
     return added
 
@@ -894,6 +1480,9 @@ async def _scout_serper(client, db) -> int:
             links = [str(item.get("link", "")) for item in resp.json().get("organic", [])]
             found = discover_slugs(" ".join(links))
             new = sum(track_company(db, provider, slug, "serper") for provider, slug in found)
+            boards = discover_boards(" ".join(links))
+            new += sum(track_company(db, provider, slug, "serper", boards=[board]) for provider, slug, board in boards)
+            found += boards
             added += new
             # site: silently falling back to generic results shows up as 0 here
             print(f"[scout] serper {query}: {len(found)} boards in {len(links)} results, {new} new")

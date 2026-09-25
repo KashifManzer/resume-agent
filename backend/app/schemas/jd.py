@@ -17,12 +17,12 @@ class JdSource(BaseModel):
     # / Lever `hostedUrl` / Workday = the posting URL. NOT source_url (a listing
     # page). None for the generic path. Threaded → job → the Result "Apply" button.
     apply_url: str | None = None
-    adapter: str  # "workday" | "greenhouse" | "lever" | "ashby" | "generic"
+    adapter: str  # a jd_adapters.ADAPTERS name, or "generic"
     warnings: list[str] = []
     # T28 freshness, naive UTC like the Board; a bare date when that is all the
     # source has (Workday). None when there is no date (updated_at: Greenhouse only).
     posted_at: datetime | date | None = None
     updated_at: datetime | None = None
-    # T28: a pasted Greenhouse/Lever/Ashby link adds its company to the Board.
-    # None = not a harvestable ATS (Workday, generic) or not a pasted link.
+    # T28: a pasted link from a harvestable ATS adds its company to the Board.
+    # None = not harvestable from a link (Eightfold, Amazon, Apple, generic) or not pasted.
     board: Literal["added", "tracked"] | None = None
