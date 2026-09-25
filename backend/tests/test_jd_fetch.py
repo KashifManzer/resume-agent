@@ -707,3 +707,85 @@ def test_a_pasted_link_whose_board_we_cannot_track_still_returns_its_jd(monkeypa
     r = _paste(monkeypatch, JdSource(text="the jd", source_url=url, adapter="workday"))
     assert r.status_code == 200 and r.json()["text"] == "the jd" and r.json()["board"] is None
     assert _companies() == {}
+
+
+# --- T37: Workable and iCIMS ---------------------------------------------------
+
+WK_JOB = "https://apply.workable.com/tickpick/j/F4AEB07453/apply"
+
+
+def test_workable_detail():
+    a = A.by_name("workable")
+    assert a.match(WK_JOB) and a.match("https://apply.workable.com/tickpick/j/F4AEB07453/")
+    assert not a.match("https://apply.workable.com/api/v1/widget/accounts/tickpick")
+    assert not a.match("https://evil.com/tickpick/j/F4AEB07453/")
+    assert a.api_url(WK_JOB) == "https://apply.workable.com/api/v2/accounts/tickpick/jobs/F4AEB07453"
+    assert a.board_slug(WK_JOB) == "tickpick"
+    src = a.parse({"title": "General Counsel", "published": "2026-09-16T00:00:00.000Z",
+                   "description": "<p>Lead</p>", "requirements": "<ul><li>JD</li></ul>", "benefits": "",
+                   "location": {"country": "United States", "countryCode": "US", "city": "New York",
+                                "region": "New York"},
+                   "locations": []}, WK_JOB)
+    assert (src.text, src.location, src.posted_at) == (
+        "Lead\n\nJD", "New York, New York, United States", date(2026, 9, 16))
+    hid = a.parse({"title": "x", "locations": [
+        {"city": "McLean", "region": "Virginia", "country": "United States", "hidden": False},
+        {"city": "", "region": None, "country": "Germany", "hidden": True}]}, WK_JOB)
+    assert hid.location == "McLean, Virginia, United States"  # the employer hid Germany
+    assert src.apply_url == "https://apply.workable.com/tickpick/j/F4AEB07453/apply"
+
+
+IC_JOB = "https://careers-gdms.icims.com/jobs/74456/advanced-systems-engineer/job"
+
+
+def _icims_page(**extra):
+    posting = {"@type": "JobPosting", "title": "Advanced Systems Engineer",
+               "description": "<p>Build</p>",  # raw tags, as live
+               "datePosted": "2026-08-20T04:00:00.000Z",
+               "jobLocation": [{"address": {"addressLocality": "Manassas", "addressRegion": "VA",
+                                            "addressCountry": "US"}}],
+               **extra}
+    return f'<script type="application/ld+json">{json.dumps(posting)}</script>'.encode()
+
+
+def test_icims_detail_reads_the_json_ld_of_the_iframe_page(monkeypatch):
+    a = A.by_name("icims")
+    assert a.match(IC_JOB) and a.match(IC_JOB + "?mobile=true&needsRedirect=false")
+    assert a.api_url(IC_JOB + "?mobile=true") == IC_JOB + "?in_iframe=1"  # the bare page is a shell
+    # Simplify's usual form has no title slug (125 of 130 active links); verified to serve the same page
+    short = "https://careers-gdms.icims.com/jobs/74456/job?mobile=true&needsRedirect=false"
+    assert a.match(short) and a.api_url(short) == "https://careers-gdms.icims.com/jobs/74456/job?in_iframe=1"
+    for bad in ("https://www.icims.com/jobs/1/x/job", "https://careers-gdms.icims.com/jobs/search?pr=0",
+                "https://careers-gdms.icims.com.evil.com/jobs/1/x/job", "https://evil.com/jobs/1/x/job"):
+        assert not a.match(bad), bad
+    assert a.board_of(IC_JOB) == ("careers-gdms", "https://careers-gdms.icims.com")
+    assert a.board_of("https://careers-gdms.icims.com/connect") is None  # not a jobs page
+    calls = _api_then_page(monkeypatch, _icims_page())
+    src = jd_fetch.fetch_jd_from_url(IC_JOB)
+    assert (src.adapter, src.title, src.location, src.posted_at, src.text) == (
+        "icims", "Advanced Systems Engineer", "Manassas, VA, US", date(2026, 8, 20), "Build")
+    assert calls == [IC_JOB + "?in_iframe=1"]
+
+
+@pytest.mark.parametrize("url, status", [(IC_JOB, 410), (WK_JOB, 404)])  # both verified on real closed jobs
+def test_a_closed_icims_or_workable_job_is_unavailable(monkeypatch, url, status):
+    calls = _api_then_page(monkeypatch, jd_fetch.JdFetchError("gone", status_code=status))
+    with pytest.raises(jd_fetch.JdUnavailable):
+        jd_fetch.fetch_jd_from_url(url)
+    assert len(calls) == 1
+
+
+def test_an_icims_page_without_a_posting_falls_back_to_the_generic_path(monkeypatch):
+    _api_then_page(monkeypatch, b"<html>maintenance</html>", _fixture("generic_job.html").encode())
+    assert jd_fetch.fetch_jd_from_url(IC_JOB).adapter == "generic"
+
+
+@pytest.mark.parametrize("adapter, url, slug, boards", [
+    ("workable", WK_JOB, "tickpick", None),
+    ("icims", IC_JOB, "careers-gdms", ["https://careers-gdms.icims.com"]),
+])
+def test_a_pasted_workable_or_icims_link_tracks_its_board(monkeypatch, adapter, url, slug, boards):
+    assert _paste(monkeypatch, JdSource(text="x", source_url=url, adapter=adapter)).json()["board"] == "added"
+    with _db.SessionLocal() as db:
+        company = db.get(TrackedCompany, slug)
+        assert (company.provider, company.boards) == (adapter, boards)

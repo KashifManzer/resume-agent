@@ -27,7 +27,7 @@ WD_API = "https://acme.wd5.myworkdayjobs.com/wday/cxs/acme/External"
 def harness(monkeypatch):
     monkeypatch.setattr(board_policy, "utcnow", lambda: NOW)
     monkeypatch.setattr(board_sync, "F500_BOARDS", [])
-    for cache in ("_ETAGS", "_UNCOMMITTED_ETAGS", "_WORKDAY_DETAILS"):
+    for cache in ("_ETAGS", "_UNCOMMITTED_ETAGS", "_WORKDAY_DETAILS", "_ROBOTS", "_ICIMS_POSTINGS"):
         monkeypatch.setattr(board_sync, cache, {})
     slept = []
 
@@ -579,7 +579,8 @@ def test_board_sync_builds_no_vendor_url_itself():
     from pathlib import Path
     src = Path(board_sync.__file__).read_text()
     for host in ("smartrecruiters.com/v1", "jobs.smartrecruiters.com/", "wday/cxs", "hcmRestApi", "api/pcsx",
-                 "search.json", "jobs.apple.com/en-us"):
+                 "search.json", "jobs.apple.com/en-us", "api/v1/widget", "api/v2/accounts", "in_iframe",
+                 "/sitemap.xml", "/robots.txt"):
         assert host not in src, host
 
 
@@ -818,3 +819,206 @@ def test_a_parked_curated_company_is_never_taken_over():
         assert not board_sync.track_company(db, "smartrecruiters", "workday", "simplify")
         db.commit()
     assert _rows()["workday"][0] == "workday"
+
+
+# --- T37: Workable ------------------------------------------------------------
+
+def wk_rows(*rows):
+    return {"name": "Acme", "jobs": [
+        {"title": t, "shortcode": sc, "published_on": day, "city": "", "state": "", "country": "",
+         "locations": [{"city": c, "region": r, "country": n, "countryCode": cc, "hidden": False}
+                       for c, r, n, cc in spots]} for t, sc, day, spots in rows]}
+
+
+def test_workable_merges_a_job_listed_once_per_location():
+    # live: charlotte-tilbury lists 301 rows for 270 jobs, one row per location
+    ny, sf = ("New York", "New York", "United States", "US"), ("San Francisco", "California", "United States", "US")
+    ldn = ("London", "England", "United Kingdom", "GB")
+    data = wk_rows(("Software Engineer", "AAA1", "2026-09-22", [ny, sf]),
+                   ("Software Engineer", "AAA1", "2026-09-22", [ny, sf]),
+                   ("Data Engineer", "BBB2", "2026-09-20", [ny]), ("Data Engineer", "BBB2", "2026-09-20", [ldn]))
+    seen = []
+    jobs = run(board_sync.fetch_workable("acme", client(lambda *a: (200, data, {}), seen)))
+    assert seen == [("GET", "https://apply.workable.com/api/v1/widget/accounts/acme", None)]
+    assert jobs == [
+        {"title": "Software Engineer", "location": "New York, New York, United States | San Francisco, California, "
+         "United States", "url": "https://apply.workable.com/acme/j/AAA1/",
+         "published_at": (NOW - timedelta(days=2)).isoformat(), "country": "US"},
+        {"title": "Data Engineer", "location": "New York, New York, United States | London, England, United Kingdom",
+         "url": "https://apply.workable.com/acme/j/BBB2/", "published_at": (NOW - timedelta(days=4)).isoformat(),
+         "country": None},  # two countries: the location text decides, any-valid-wins
+    ]
+
+
+def test_an_unknown_workable_account_is_gone_but_workable_is_not_a_move_target():
+    assert run(board_sync.fetch_workable("nosuch", client(lambda *a: (404, {}, {})))) is None  # verified live
+    # 15 of 16 parked slugs Workable knew were dormant 0-job accounts (2026-09-25)
+    assert "workable" not in board_sync.MOVABLE and "workable" in board_sync.DATE_ONLY
+
+
+def test_a_workable_job_missing_from_its_account_closes():
+    with _db.SessionLocal() as db:
+        db.add(TrackedCompany(slug="acme", provider="workable"))
+        db.commit()
+    us = ("Austin", "Texas", "United States", "US")
+    both = wk_rows(("Software Engineer", "AAA1", "2026-09-22", [us]), ("Backend Engineer", "BBB2", "2026-09-22", [us]))
+    assert _sync(lambda *a: (200, both, {})) == 2
+    assert _sync(lambda *a: (200, wk_rows(("Software Engineer", "AAA1", "2026-09-22", [us])), {})) == 1
+    assert _postings()["https://apply.workable.com/acme/j/BBB2/"][0] == "closed"
+
+
+# --- T37: iCIMS ---------------------------------------------------------------
+
+IC = "https://careers-acme.icims.com"
+
+
+def ic_sitemap(*jobs):
+    urls = "".join(f"<url><loc>{IC}/jobs/{jid}/{slug}/job</loc><lastmod>{lm}</lastmod></url>" for jid, slug, lm in jobs)
+    return f"<?xml version='1.0'?><urlset><url><loc>{IC}/jobs/intro</loc></url>{urls}</urlset>".encode()
+
+
+def ic_page(title, day="2026-09-22", where=(("Austin", "TX", "US"),)):
+    posting = {"@context": "http://schema.org", "@type": "JobPosting", "title": title, "description": "<p>Build</p>",
+               "datePosted": f"{day}T04:00:00.000Z", "jobLocation": [
+                   {"@type": "Place", "address": {"addressLocality": c, "addressRegion": r, "addressCountry": n}}
+                   for c, r, n in where]}
+    return f'<html><script type="application/ld+json">{json.dumps(posting)}</script></html>'.encode()
+
+
+def icims(robots=b"User-agent: *\nDisallow: /jobs/login\n", sitemap=b"", pages=None):
+    def handler(method, url, body):
+        if url.endswith("/robots.txt"):
+            return 200, robots, {}
+        if url.endswith("/sitemap.xml"):
+            return 200, sitemap, {}
+        answer = (pages or {}).get(url.split("/jobs/")[1].split("/")[0])
+        return answer if isinstance(answer, tuple) else (200, answer, {})
+    return handler
+
+
+def test_icims_reads_only_likely_target_roles_from_their_own_page(harness):
+    recent, old = "2026-09-23T10:00:00-04:00", "2026-07-01T10:00:00-04:00"  # the window is 14 + 30 days
+    sitemap = ic_sitemap(("1", "software-engineer", recent), ("2", "accountant", recent),
+                         ("3", "software-engineer-ii", old), ("4", "backend-developer%2c-platform", recent))
+    seen = []
+    pages = {"1": ic_page("Software Engineer"),
+             "4": ic_page("Backend Developer, Platform", where=(("Pune", "MH", "IN"),))}
+    jobs = run(board_sync.fetch_icims("careers-acme", client(icims(sitemap=sitemap, pages=pages), seen), [IC]))
+    assert [u for _, u, _ in seen] == [f"{IC}/robots.txt", f"{IC}/sitemap.xml",
+                                       f"{IC}/jobs/1/software-engineer/job?in_iframe=1",
+                                       f"{IC}/jobs/4/backend-developer%2c-platform/job?in_iframe=1"]
+    assert jobs[0] == {"title": "Software Engineer", "location": "Austin, TX, US", "country": "US",
+                       "published_at": (NOW - timedelta(days=2)).isoformat(),
+                       "url": f"{IC}/jobs/1/software-engineer/job"}
+    assert jobs[1] == {"title": "accountant", "location": None, "published_at": None,
+                       "url": f"{IC}/jobs/2/accountant/job"}  # seen, never stored
+    assert jobs[2]["published_at"] is None  # a target title untouched for 44+ days is not fetched
+    assert jobs[3]["country"] == "IN"
+    assert 1.0 in harness  # the polite gap before each page
+
+
+def test_an_icims_portal_that_forbids_us_is_never_fetched():
+    seen = []
+    handler = icims(robots=b"User-agent: *\nDisallow: /\n",
+                    sitemap=ic_sitemap(("1", "software-engineer", "2026-09-23")))
+    assert run(board_sync.fetch_icims("careers-acme", client(handler, seen), [IC])) is None  # 3 of 70 live ones
+    assert [u for _, u, _ in seen] == [f"{IC}/robots.txt"]
+
+
+def test_icims_honours_crawl_delay_and_rereads_robots_daily(harness, monkeypatch):
+    handler = icims(robots=b"User-agent: *\nCrawl-delay: 7\n",
+                    sitemap=ic_sitemap(("1", "software-engineer", "2026-09-23T10:00:00-04:00")),
+                    pages={"1": ic_page("Software Engineer")})
+    seen = []
+    run(board_sync.fetch_icims("careers-acme", client(handler, seen), [IC]))
+    assert 7 in harness
+    run(board_sync.fetch_icims("careers-acme", client(handler, seen), [IC]))
+    assert [u for _, u, _ in seen].count(f"{IC}/robots.txt") == 1  # cached within a day
+    monkeypatch.setattr(board_policy, "utcnow", lambda: NOW + timedelta(days=1, minutes=1))
+    run(board_sync.fetch_icims("careers-acme", client(handler, seen), [IC]))
+    assert [u for _, u, _ in seen].count(f"{IC}/robots.txt") == 2
+
+
+def test_an_icims_job_that_closed_since_the_sitemap_is_dropped_and_a_page_without_json_ld_is_undated():
+    sitemap = ic_sitemap(("1", "software-engineer", "2026-09-23"), ("2", "data-engineer", "2026-09-23"))
+    pages = {"1": (410, b"", {}), "2": b"<html>no posting here</html>"}
+    jobs = run(board_sync.fetch_icims("careers-acme", client(icims(sitemap=sitemap, pages=pages)), [IC]))
+    assert [(j["url"].split("/jobs/")[1], j["published_at"]) for j in jobs] == [("2/data-engineer/job", None)]
+
+
+def test_icims_ignores_other_hosts_and_pages_in_a_sitemap():
+    sitemap = (b"<urlset><url><loc>https://evil.icims.com/jobs/9/software-engineer/job</loc></url>"
+               b"<url><loc>" + IC.encode() + b"/jobs/search?pr=0</loc></url></urlset>")
+    assert run(board_sync.fetch_icims("careers-acme", client(icims(sitemap=sitemap)), [IC])) == []
+
+
+def test_icims_detail_is_cached_by_url():
+    seen = []
+    handler = icims(sitemap=ic_sitemap(("1", "software-engineer", "2026-09-23")),
+                    pages={"1": ic_page("Software Engineer")})
+    run(board_sync.fetch_icims("careers-acme", client(handler, seen), [IC]))
+    run(board_sync.fetch_icims("careers-acme", client(handler, seen), [IC]))
+    assert sum("in_iframe" in u for _, u, _ in seen) == 1
+
+
+def test_an_icims_board_stores_its_target_roles_and_closes_by_absence():
+    with _db.SessionLocal() as db:
+        db.add(TrackedCompany(slug="careers-acme", provider="icims", boards=[IC]))
+        db.commit()
+    pages = {"1": ic_page("Software Engineer"), "2": ic_page("Backend Engineer")}
+    both = icims(sitemap=ic_sitemap(("1", "software-engineer", "2026-09-23"), ("2", "backend-engineer", "2026-09-23")),
+                 pages=pages)
+    assert _sync(both, slug="careers-acme") == 2
+    one = icims(sitemap=ic_sitemap(("1", "software-engineer", "2026-09-23")), pages=pages)
+    assert _sync(one, slug="careers-acme") == 1
+    assert _postings()[f"{IC}/jobs/2/backend-engineer/job"][0] == "closed"
+
+
+def test_t37_discovery_and_serper_sites():
+    text = ("https://apply.workable.com/tickpick/j/5840ECEB50/apply https://apply.workable.com/api/v1/widget "
+            "https://careers-gdms.icims.com/jobs/71647/junior-full-stack-engineer/job "
+            "https://www.icims.com/jobs/1/x/job https://careers-gdms.icims.com/connect")
+    assert ("workable", "tickpick") in board_sync.discover_slugs(text)
+    assert not any(s == "api" for _, s in board_sync.discover_slugs(text))
+    assert board_sync.discover_boards(text) == [("icims", "careers-gdms", "https://careers-gdms.icims.com")]
+    assert {"apply.workable.com", "icims.com"} <= set(board_sync.SERPER_SITES)
+
+
+@pytest.mark.parametrize("body", [b"<html>Service Unavailable</html>",
+                                  b"<sitemapindex><sitemap><loc>x</loc></sitemap></sitemapindex>"])
+def test_an_icims_sitemap_that_is_not_a_urlset_closes_nothing(body):
+    with pytest.raises(ValueError):
+        run(board_sync.fetch_icims("careers-acme", client(icims(sitemap=body)), [IC]))
+    # a real empty portal is a urlset holding only its intro page, and reads as no jobs
+    assert run(board_sync.fetch_icims("careers-acme", client(icims(sitemap=ic_sitemap())), [IC])) == []
+
+
+def test_a_workable_location_the_employer_hid_is_neither_shown_nor_used():
+    data = {"jobs": [{"title": "Software Engineer", "shortcode": "AAA1", "published_on": "2026-09-22", "locations": [
+        {"city": "Austin", "region": "Texas", "country": "United States", "countryCode": "US", "hidden": False},
+        {"city": "", "region": None, "country": "Germany", "countryCode": "DE", "hidden": True}]}]}
+    job, = run(board_sync.fetch_workable("acme", client(lambda *a: (200, data, {}))))
+    assert (job["location"], job["country"]) == ("Austin, Texas, United States", "US")
+
+
+def test_an_icims_page_without_json_ld_is_asked_again_next_time():
+    # it may have been a passing error page; the real posting must not be lost until a restart
+    seen = []
+    handler = icims(sitemap=ic_sitemap(("1", "software-engineer", "2026-09-23")),
+                    pages={"1": b"<html>maintenance</html>"})
+    run(board_sync.fetch_icims("careers-acme", client(handler, seen), [IC]))
+    later = icims(sitemap=ic_sitemap(("1", "software-engineer", "2026-09-23")),
+                  pages={"1": ic_page("Software Engineer")})
+    job, = run(board_sync.fetch_icims("careers-acme", client(later, seen), [IC]))
+    assert job["title"] == "Software Engineer" and job["published_at"] is not None
+    assert sum("in_iframe" in u for _, u, _ in seen) == 2
+
+
+def test_a_job_page_robots_forbids_is_not_fetched():
+    seen = []
+    handler = icims(robots=b"User-agent: *\nDisallow: /jobs/1/\n",
+                    sitemap=ic_sitemap(("1", "software-engineer", "2026-09-23"), ("2", "data-engineer", "2026-09-23")),
+                    pages={"1": ic_page("Software Engineer"), "2": ic_page("Data Engineer")})
+    jobs = run(board_sync.fetch_icims("careers-acme", client(handler, seen), [IC]))
+    assert not any("/jobs/1/" in u and "in_iframe" in u for _, u, _ in seen)
+    assert [j["published_at"] is None for j in jobs] == [True, False]  # seen, but never read or stored

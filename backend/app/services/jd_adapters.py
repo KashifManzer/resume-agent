@@ -11,7 +11,7 @@ import html
 import json
 import re
 from datetime import datetime, timezone
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from app.schemas.jd import JdSource
 
@@ -588,8 +588,150 @@ def apple_location(locations) -> str | None:
     return " | ".join(u for u in units if u) or None
 
 
+def places(entries: list, *keys: str) -> tuple[str | None, str | None]:
+    """("City, Region, Country | ...", the first entry's ISO country) from a
+    vendor's location list; `keys` name the city/region/country/code fields."""
+    units, country = [], None
+    for entry in entries if isinstance(entries, list) else []:
+        if isinstance(entry, dict):
+            units.append(", ".join(v for v in (entry.get(k) for k in keys[:3]) if isinstance(v, str) and v))
+            country = country or entry.get(keys[3])
+    # dict.fromkeys: Workable repeats a multi-location job's list on every row
+    return " | ".join(dict.fromkeys(u for u in units if u)) or None, country if isinstance(country, str) else None
+
+
+class Workable:
+    """apply.workable.com (T37). robots.txt allows all; unknown accounts 404."""
+    name = "workable"
+    api_is_source = True  # a closed job's API answers 404 (7 of 8 checked) while its page answers 200
+    _API = "https://apply.workable.com/api"
+
+    def _parts(self, url: str) -> tuple[str, str] | None:
+        p = urlparse(url)
+        m = re.fullmatch(r"/([A-Za-z0-9_-]+)/j/([A-Za-z0-9]+)(?:/apply)?/?", p.path)
+        return (m.group(1), m.group(2)) if p.hostname == "apply.workable.com" and m else None
+
+    def match(self, url: str) -> bool:
+        return self._parts(url) is not None
+
+    def api_url(self, url: str) -> str:
+        account, shortcode = self._parts(url)
+        return f"{self._API}/v2/accounts/{account}/jobs/{shortcode}"
+
+    def board_slug(self, url: str) -> str:
+        # ponytail: lowercased like every slug; accounts ARE case-sensitive
+        # (TickPick 404s), but 0 of 123 real accounts use capitals (2026-09-24).
+        return self._parts(url)[0].lower()
+
+    def list_url(self, slug: str) -> str:
+        """Every job at once; the paged v3 search has the same ones, 10 a page."""
+        return f"{self._API}/v1/widget/accounts/{slug}"
+
+    def job_url(self, slug: str, shortcode: str) -> str:
+        return f"https://apply.workable.com/{quote(slug, safe='')}/j/{quote(str(shortcode), safe='')}/"
+
+    def parse(self, data: dict, url: str) -> JdSource:
+        shown = [p for p in data.get("locations") or [data.get("location")]
+                 if isinstance(p, dict) and not p.get("hidden")]  # the employer hid these
+        location, _ = places(shown, "city", "region", "country", "countryCode")
+        return JdSource(
+            text="\n\n".join(t for t in (_strip_html(data.get(k) or "") for k in (
+                "description", "requirements", "benefits")) if t),
+            title=data.get("title"),
+            location=location,
+            source_url=url,
+            apply_url=self.job_url(*self._parts(url)) + "apply",
+            adapter=self.name,
+            posted_at=(d := parse_ats_date(data.get("published"))) and d.date(),  # a date only
+        )
+
+
+def job_posting(page: str) -> dict | None:
+    """The page's schema.org JobPosting (JSON-LD), or None."""
+    for block in re.findall(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>', page, re.S):
+        try:
+            data = json.loads(block)
+        except ValueError:
+            continue
+        if isinstance(data, dict) and data.get("@type") == "JobPosting":
+            return data
+    return None
+
+
+def posting_places(posting: dict) -> tuple[str | None, str | None]:
+    where = posting.get("jobLocation")
+    where = where if isinstance(where, list) else [where]
+    return places([w.get("address") for w in where if isinstance(w, dict)],
+                  "addressLocality", "addressRegion", "addressCountry", "addressCountry")
+
+
+class ICIMS:
+    """{portal}.icims.com (T37). robots.txt is per portal and 3 of 70 active ones
+    forbid us, so the harvester reads each one's before fetching anything."""
+    name = "icims"
+    raw = True
+    api_is_source = True  # a closed job's page answers 410 (5 of 6 checked)
+    _HOST = re.compile(r"(?!www\.)([a-z0-9-]+)\.icims\.com")
+    # Most links have no title slug: /jobs/{id}/job (125 of 130 active in Simplify)
+    _JOB = re.compile(r"/jobs/(\d+)(?:/([^/]+))?/job/?")
+
+    def _parts(self, url: str) -> tuple[str, str | None, str | None] | None:
+        """(host, job id, title slug) of a link into a portal's /jobs/ pages."""
+        p = urlparse(url)
+        host = (p.hostname or "").lower()
+        if not self._HOST.fullmatch(host) or not p.path.startswith("/jobs/"):
+            return None
+        m = self._JOB.fullmatch(p.path)
+        return host, m and m.group(1), m and m.group(2)
+
+    def match(self, url: str) -> bool:
+        return bool((parts := self._parts(url)) and parts[1])
+
+    def api_url(self, url: str) -> str:
+        """The job itself; the bare URL is a 652 KB shell with no JSON-LD."""
+        host, jid, slug = self._parts(url)
+        return f"https://{host}/jobs/{jid}/{slug + '/' if slug else ''}job?in_iframe=1"
+
+    def board_of(self, url: str) -> tuple[str, str] | None:
+        """(slug, board URL) of a link into a portal's jobs; slug = the host label."""
+        parts = self._parts(url)
+        return (parts[0].split(".")[0], f"https://{parts[0]}") if parts else None
+
+    def board(self, board_url: str) -> str:
+        host = (urlparse(board_url).hostname or "").lower()
+        if not self._HOST.fullmatch(host) or board_url.rstrip("/") != f"https://{host}":
+            raise ValueError(f"not an iCIMS board: {board_url!r}")
+        return f"https://{host}"
+
+    def robots_url(self, board_url: str) -> str:
+        return f"{self.board(board_url)}/robots.txt"
+
+    def sitemap_url(self, board_url: str) -> str:
+        return f"{self.board(board_url)}/sitemap.xml"
+
+    def slug_title(self, url: str) -> str:
+        """The title in a job link: it gave the same role verdict as the page's
+        own title on 134 of 134 jobs (14 portals), so it picks what to fetch."""
+        return unquote(self._parts(url)[2] or "").replace("-", " ")
+
+    def parse(self, page: str, url: str) -> JdSource:
+        posting = job_posting(page)
+        if posting is None:
+            raise ValueError("iCIMS page has no JobPosting")
+        location, _ = posting_places(posting)
+        return JdSource(
+            text=_strip_html(posting.get("description") or ""),
+            title=posting.get("title"),
+            location=location,
+            source_url=url,
+            apply_url=url,
+            adapter=self.name,
+            posted_at=(d := parse_ats_date(posting.get("datePosted"))) and d.date(),  # a date only
+        )
+
+
 ADAPTERS = [Workday(), Greenhouse(), Lever(), Ashby(), Oracle(), SmartRecruiters(), Eightfold(),
-            Amazon(), Apple()]
+            Amazon(), Apple(), Workable(), ICIMS()]
 
 
 def by_name(name: str):

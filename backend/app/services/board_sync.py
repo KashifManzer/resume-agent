@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import hashlib
+import html
 import json
 import os
 import random
@@ -12,6 +13,7 @@ from datetime import datetime, timezone, timedelta
 
 import httpx
 from urllib.parse import urlparse
+from urllib.robotparser import RobotFileParser
 from email.utils import parsedate_to_datetime
 from sqlalchemy import select, func, delete, or_
 from sqlalchemy.dialects.sqlite import insert
@@ -946,6 +948,104 @@ async def fetch_apple(slug: str, client=None) -> list[dict] | object | None:
     return jobs
 
 
+async def fetch_workable(slug: str, client=None) -> list[dict] | object | None:
+    """One request holds every job, a multi-location job once per location
+    (charlotte-tilbury: 301 rows, 270 jobs = the paged search's total), so
+    rows merge by shortcode. An unknown account is a 404 (verified)."""
+    wk = jd_adapters.by_name("workable")
+    data = await _get_board("workable", slug, client)
+    if data is None or data is NOT_MODIFIED:
+        return data
+    merged: dict[str, list[dict]] = {}
+    for row in _page_of(data, "jobs", "shortcode"):
+        merged.setdefault(str(row["shortcode"]), []).append(row)
+    jobs = []
+    for shortcode, rows in merged.items():
+        spots = [spot for row in rows for spot in row.get("locations") or [
+            {"city": row.get("city"), "region": row.get("state"), "country": row.get("country")}]
+            if isinstance(spot, dict) and not spot.get("hidden")]  # 10 of 4,744 live: the employer hid them
+        location, _ = jd_adapters.places(spots, "city", "region", "country", "countryCode")
+        codes = {spot.get("countryCode") for spot in spots}
+        jobs.append({"title": rows[0].get("title"), "location": location, "url": wk.job_url(slug, shortcode),
+                     "published_at": _days_ago(_age_days(rows[0].get("published_on"))),
+                     "country": _alpha2(codes.pop()) if len(codes) == 1 else None})
+    return jobs
+
+
+# A posting was dated up to 6 days after its sitemap lastmod (8 of 134 checked),
+# so a job is a candidate if touched within the window plus a 30-day margin.
+ICIMS_WINDOW = board_policy.MAX_AGE + timedelta(days=30)
+_ROBOTS: dict[str, tuple[datetime, RobotFileParser]] = {}  # host -> (read at, rules)
+_ICIMS_POSTINGS: dict[str, dict] = {}  # job URL -> fields from its JSON-LD
+
+
+async def _robots(client, url: str) -> RobotFileParser:
+    """A site's robots.txt, re-read daily; a missing one (404) allows everything."""
+    host, now = urlparse(url).hostname, board_policy.utcnow()
+    if host not in _ROBOTS or _ROBOTS[host][0] <= now - timedelta(days=1):
+        body = await _page("icims", _download, client, url)
+        rules = RobotFileParser()
+        rules.parse((body or b"").decode("utf-8", "replace").splitlines())
+        _ROBOTS[host] = (now, rules)
+    return _ROBOTS[host][1]
+
+
+async def _icims_posting(client, ic, url: str, gap: float) -> dict | None:
+    """The job's own JSON-LD: None when the job is gone (410, verified), {} when
+    its page carries none - not cached, as that may be a passing error page
+    (0 of 134 real pages lacked it)."""
+    if url not in _ICIMS_POSTINGS:
+        await asyncio.sleep(gap)
+        page = await _page("icims", functools.partial(_download, gone=(404, 410)), client, ic.api_url(url))
+        if page is None:
+            return None
+        posting = jd_adapters.job_posting(page.decode("utf-8", "replace"))
+        if not posting:
+            return {}
+        location, country = jd_adapters.posting_places(posting)
+        _ICIMS_POSTINGS[url] = {
+            "title": posting.get("title"), "location": location, "country": _alpha2(country),
+            "published_at": _days_ago(_age_days(str(posting.get("datePosted") or "")[:10]))}
+    return _ICIMS_POSTINGS[url]
+
+
+async def fetch_icims(slug: str, client, boards: list[str]) -> list[dict] | None:
+    """A portal's sitemap lists every open job (it matched the search total on 4
+    portals: 669, 1,512, 65, 39) but only a title in the URL, and its lastmod
+    is not the posting date. So the likely target roles are read from their
+    own page's JSON-LD; the rest are seen, never stored. robots.txt is per
+    portal (3 of 70 active ones forbid us): a portal that does is gone."""
+    ic = jd_adapters.by_name("icims")
+    jobs, live = [], False
+    for board in boards:
+        rules = await _robots(client, ic.robots_url(board))
+        if not rules.can_fetch(USER_AGENT, ic.sitemap_url(board)):
+            print(f"[board] icims {board}: robots.txt forbids us")
+            continue
+        body = await _page("icims", _download, client, ic.sitemap_url(board))
+        if body is None:
+            continue
+        sitemap = body.decode("utf-8", "replace")
+        if "<urlset" not in sitemap:  # an error page or an index is not proof every job closed
+            raise ValueError(f"icims {board}: sitemap is not a urlset")
+        live, host = True, ic.board(board).split("//")[1]
+        gap = max(PAGE_GAP.get("icims", 1.0), rules.crawl_delay(USER_AGENT) or 0)
+        cutoff = board_policy.utcnow() - ICIMS_WINDOW
+        for loc, lastmod in re.findall(r"<loc>([^<]+)</loc>\s*(?:<lastmod>([^<]+)</lastmod>)?", sitemap):
+            url = html.unescape(loc).strip()
+            if not ic.match(url) or ic.board_of(url)[1] != f"https://{host}":
+                continue  # the portal's other pages, or a stray host
+            title, touched = ic.slug_title(url), jd_adapters.parse_ats_date(lastmod)
+            posting = {}
+            if (is_target_role(title) and (touched is None or touched > cutoff)
+                    and rules.can_fetch(USER_AGENT, ic.api_url(url))):
+                posting = await _icims_posting(client, ic, url, gap)
+                if posting is None:
+                    continue  # closed since the sitemap was built
+            jobs.append({"title": title, "location": None, "published_at": None, **posting, "url": url})
+    return jobs if live else None
+
+
 class BoardVendorError(Exception):
     """The vendor's board could not be fetched or parsed. Expected noise, not a
     bug in our code - the distinction is the whole point of this exception."""
@@ -953,13 +1053,16 @@ class BoardVendorError(Exception):
 
 FETCHERS = {"ashby": fetch_ashby, "greenhouse": fetch_greenhouse, "lever": fetch_lever,
             "workday": fetch_workday, "oracle": fetch_oracle, "smartrecruiters": fetch_smartrecruiters,
-            "eightfold": fetch_eightfold, "amazon": fetch_amazon, "apple": fetch_apple}
-NEEDS_BOARDS = {"workday", "oracle", "eightfold"}  # a slug alone does not locate these
+            "eightfold": fetch_eightfold, "amazon": fetch_amazon, "apple": fetch_apple,
+            "workable": fetch_workable, "icims": fetch_icims}
+NEEDS_BOARDS = {"workday", "oracle", "eightfold", "icims"}  # a slug alone does not locate these
 # Only these 404 a slug they do not host, which is what makes the move check
 # sound; SmartRecruiters answers 200 for any slug (verified), the rest need boards.
+# Not Workable: it 404s unknown accounts, but 15 of 16 parked slugs it knew were
+# dormant accounts with 0 jobs - a move there would never be rechecked.
 MOVABLE = ("greenhouse", "lever", "ashby")
 # Vendors that give only a date: their first-seen stamp is kept, never recomputed.
-DATE_ONLY = {"workday", "oracle", "amazon"}
+DATE_ONLY = {"workday", "oracle", "amazon", "workable", "icims"}
 WORKERS = {"workday": 3}  # 8,833 pages if all ~315 sites changed: 2.5-3.7 h on one lane
 
 
@@ -1288,6 +1391,7 @@ _DISCOVERY_PATTERNS = {
     "lever": re.compile(r"jobs\.lever\.co/([a-zA-Z0-9_.-]+)"),
     # a job id must follow the company: the oneclick-ui/... paths are not companies
     "smartrecruiters": re.compile(r"jobs\.smartrecruiters\.com/([a-zA-Z0-9_-]+)/\d"),
+    "workable": re.compile(r"apply\.workable\.com/([a-zA-Z0-9_-]+)/j/"),  # /j/: not its /api/ paths
 }
 _URL = re.compile(r"https?://[^\s\"'<>]+")
 
@@ -1304,7 +1408,7 @@ SIMPLIFY_LISTINGS = ("https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Po
 # reach comes from rotating the phrase daily, not from paging. Page 1 of the
 # old fixed query found 0 untracked companies; a rotated phrase found 9.
 SERPER_SITES = ("boards.greenhouse.io", "job-boards.greenhouse.io", "jobs.ashbyhq.com", "jobs.lever.co",
-                "myworkdayjobs.com")
+                "myworkdayjobs.com", "apply.workable.com", "icims.com")
 SERPER_PHRASES = ("software engineer", "backend engineer", "new grad software engineer",
                   "machine learning engineer", "infrastructure engineer", "full stack engineer",
                   "data engineer")
@@ -1371,7 +1475,7 @@ def discover_boards(text: str) -> list[tuple[str, str, str]]:
     so nothing outside the vendor's domain can become a board to fetch."""
     found = {}
     for url in _URL.findall(text):
-        for provider in ("workday", "oracle"):
+        for provider in ("workday", "oracle", "icims"):
             if hit := jd_adapters.by_name(provider).board_of(url):
                 found.setdefault(_board_key(hit[1]), (provider, *hit))
     return list(found.values())
